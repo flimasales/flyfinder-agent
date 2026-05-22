@@ -304,6 +304,22 @@ def gerar_deeplinks(v: Viagem) -> List[dict]:
 
 
 _PRICE_RE = re.compile(r"[\d.,]+")
+_MOEDA_SIMBOLOS = {
+    "R$": "BRL", "BRL": "BRL", "RS": "BRL",
+    "US$": "USD", "USD": "USD",
+    "€": "EUR", "EUR": "EUR",
+    "£": "GBP", "GBP": "GBP",
+    "$": "USD",  # fallback: $ sozinho = USD
+}
+
+
+def _detectar_moeda(preco_str: str) -> str:
+    """Detecta a moeda do preço retornado pelo Google Flights."""
+    s = str(preco_str or "").upper().strip()
+    for simb, code in _MOEDA_SIMBOLOS.items():
+        if simb in s:
+            return code
+    return "BRL"
 
 
 def _preco_para_float(preco) -> Optional[float]:
@@ -323,6 +339,50 @@ def _preco_para_float(preco) -> Optional[float]:
         return float(s)
     except ValueError:
         return None
+
+
+_cache_cotacao: dict[str, tuple[float, float]] = {}
+
+
+def cotacao_para_brl(moeda: str) -> float:
+    """Retorna quantos BRL vale 1 unidade da moeda. Cache de 10 min.
+    Usa AwesomeAPI (grátis, sem cadastro). Fallback: 1.0 se falhar."""
+    moeda = moeda.upper()
+    if moeda == "BRL":
+        return 1.0
+    agora = time.time()
+    if moeda in _cache_cotacao:
+        valor, ts = _cache_cotacao[moeda]
+        if agora - ts < 600:
+            return valor
+    try:
+        url = f"https://economia.awesomeapi.com.br/json/last/{moeda}-BRL"
+        with urllib.request.urlopen(url, timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        chave = f"{moeda}BRL"
+        valor = float(data[chave]["bid"])
+        _cache_cotacao[moeda] = (valor, agora)
+        return valor
+    except Exception as e:
+        print(f"[aviso] cotação {moeda}→BRL falhou: {e}; usando 1.0",
+              file=sys.stderr)
+        return 1.0
+
+
+def normalizar_para_brl(preco_num: Optional[float],
+                        preco_str: str) -> tuple[Optional[float], str]:
+    """Converte preço para BRL. Retorna (valor_brl, str_exibicao).
+    Se já era BRL, mantém igual. Se converteu, mostra '~R$ X (USD Y)'."""
+    if preco_num is None:
+        return None, preco_str
+    moeda = _detectar_moeda(preco_str)
+    if moeda == "BRL":
+        return preco_num, preco_str
+    taxa = cotacao_para_brl(moeda)
+    brl = preco_num * taxa
+    if taxa == 1.0:
+        return preco_num, f"{preco_str} (sem conversão)"
+    return brl, f"~R$ {brl:,.0f} ({preco_str})".replace(",", ".")
 
 
 def consultar_google_flights(v: Viagem) -> Optional[dict]:
@@ -370,14 +430,19 @@ def consultar_google_flights(v: Viagem) -> Optional[dict]:
 
         ofertas = []
         for f in getattr(result, "flights", []) or []:
+            preco_raw = getattr(f, "price", None)
+            preco_num = _preco_para_float(preco_raw)
+            preco_brl, preco_str = normalizar_para_brl(
+                preco_num, str(preco_raw) if preco_raw else "—"
+            )
             ofertas.append({
                 "cia":       getattr(f, "name", "—") or "—",
                 "saida":     getattr(f, "departure", "—"),
                 "chegada":   getattr(f, "arrival", "—"),
                 "duracao":   getattr(f, "duration", "—"),
                 "escalas":   getattr(f, "stops", 0),
-                "preco_str": getattr(f, "price", "—"),
-                "preco":     _preco_para_float(getattr(f, "price", None)),
+                "preco_str": preco_str,
+                "preco":     preco_brl,
                 "melhor":    bool(getattr(f, "is_best", False)),
             })
         trechos.append({
