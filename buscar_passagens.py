@@ -2010,6 +2010,39 @@ _HTML_TEMPLATE = """<!doctype html>
     color: var(--accent); }}
   .class-picker .pill.active {{ background: var(--accent);
     color: #0f172a; border-color: var(--accent); cursor: default; }}
+  .leg-tabs {{
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin: 0 0 14px; padding: 6px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px;
+  }}
+  .leg-tabs .tab {{
+    appearance: none; background: transparent; border: none;
+    color: var(--muted); padding: 9px 14px; border-radius: 8px;
+    cursor: pointer; font: inherit; font-size: 13px; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: all .15s;
+  }}
+  .leg-tabs .tab:hover {{ color: var(--accent);
+    background: rgba(56,189,248,.08); }}
+  .leg-tabs .tab.active {{
+    background: var(--accent); color: #0f172a; cursor: default;
+  }}
+  .leg-tabs .tab .num {{
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: rgba(148,163,184,.18); color: var(--muted);
+    font-size: 11px; font-weight: 700;
+  }}
+  .leg-tabs .tab.active .num {{
+    background: rgba(15,23,42,.18); color: #0f172a;
+  }}
+  .leg-tabs .tab .price-hint {{
+    font-size: 11px; font-weight: 500; opacity: .85;
+    color: var(--good);
+  }}
+  .leg-tabs .tab.active .price-hint {{ color: #064e3b; }}
+  .tab-panel[hidden] {{ display: none; }}
   footer {{ margin-top: 32px; color: var(--muted); font-size: 12px;
     text-align: center; }}
 </style>
@@ -2195,6 +2228,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
         )
 
         secoes = []
+        tabs_botoes = []
         for i, td in enumerate(trechos_dados, 1):
             L = td["leg"]
             titulo = (
@@ -2202,16 +2236,44 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                 f"<small style='color:var(--muted);font-weight:400;font-size:13px'>"
                 f"({e(L.data_br)})</small>"
             )
+            melhor = melhores[i - 1] if i - 1 < len(melhores) else None
+            preco_hint = ""
+            if melhor and melhor.get("preco_str"):
+                preco_hint = (
+                    f'<span class="price-hint">{e(str(melhor["preco_str"]))}</span>'
+                )
+            elif td.get("erro") or not td.get("ofertas"):
+                preco_hint = '<span class="price-hint">—</span>'
+            tab_label = f"{e(L.origem_label)} → {e(L.destino_label)}"
+            tabs_botoes.append(
+                f'<button type="button" class="tab'
+                f'{" active" if i == 1 else ""}" '
+                f'data-tab="trecho-{i}" '
+                f'aria-controls="trecho-{i}" '
+                f'aria-selected="{"true" if i == 1 else "false"}">'
+                f'<span class="num">{i}</span>'
+                f'<span class="route">{tab_label}</span>'
+                f'{preco_hint}'
+                f'</button>'
+            )
+            painel_attrs = (
+                f'class="tab-panel" id="trecho-{i}" '
+                f'role="tabpanel"' + ("" if i == 1 else " hidden")
+            )
             if td.get("erro"):
                 secoes.append(
+                    f'<section {painel_attrs}>'
                     f"<h3>{titulo}</h3>"
                     f'<div class="notice">Erro: {e(td["erro"])}</div>'
+                    f"</section>"
                 )
                 continue
             if not td["ofertas"]:
                 secoes.append(
+                    f'<section {painel_attrs}>'
                     f"<h3>{titulo}</h3>"
                     f'<div class="notice">Sem ofertas retornadas.</div>'
+                    f"</section>"
                 )
                 continue
 
@@ -2322,6 +2384,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
             nivel = td.get("current_price") or "—"
             th_rota = "<th>Rota</th>" if mostrar_rota else ""
             secoes.append(
+                f'<section {painel_attrs}>'
                 f"<h3>{titulo}</h3>"
                 f"<div class='label' style='color:var(--muted);"
                 f"font-size:12px;margin-bottom:6px'>"
@@ -2333,9 +2396,15 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                 f"<th>Duração</th><th>Escalas</th><th>Preço</th>"
                 f"<th>Fonte</th>"
                 f"</tr></thead><tbody>{''.join(linhas)}</tbody></table>"
+                f"</section>"
             )
-        detalhes_html = "<h2>Ofertas por trecho (Google Flights)</h2>" + \
-            "".join(secoes)
+        detalhes_html = (
+            "<h2>Ofertas por trecho (Google Flights)</h2>"
+            f'<div class="leg-tabs" role="tablist">'
+            f'{"".join(tabs_botoes)}'
+            f"</div>"
+            f'<div class="tab-panels">{"".join(secoes)}</div>'
+        )
     else:
         resumo_html = (
             '<div class="notice">Para ver preços reais aqui, instale: '
@@ -2420,6 +2489,25 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
         f'  const href = tr.getAttribute("data-href");'
         f'  if (href) window.open(href, "_blank", "noopener");'
         f'}});'
+        f'document.addEventListener("click", function(ev) {{'
+        f'  const btn = ev.target.closest(".leg-tabs .tab");'
+        f'  if (!btn) return;'
+        f'  const grupo = btn.closest(".leg-tabs");'
+        f'  const alvo = btn.getAttribute("data-tab");'
+        f'  if (!grupo || !alvo) return;'
+        f'  grupo.querySelectorAll(".tab").forEach(function(b) {{'
+        f'    const ativo = b === btn;'
+        f'    b.classList.toggle("active", ativo);'
+        f'    b.setAttribute("aria-selected", ativo ? "true" : "false");'
+        f'  }});'
+        f'  const wrap = grupo.parentNode;'
+        f'  wrap.querySelectorAll(".tab-panels > .tab-panel").forEach('
+        f'    function(p) {{'
+        f'      if (p.id === alvo) {{ p.removeAttribute("hidden"); }}'
+        f'      else {{ p.setAttribute("hidden", ""); }}'
+        f'    }}'
+        f'  );'
+        f'}});'
         f'</script>'
     )
 
@@ -2445,12 +2533,13 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
 def _classes_from_env() -> list[str]:
     """Lê VIAGEM_CLASSE e retorna a lista de classes desejadas.
 
-    Aceita um valor único (`premium`) ou CSV (`premium,executiva`).
-    Classes desconhecidas são ignoradas com aviso. Padrão:
-    `premium,executiva` — monitora as duas e a página mostra um
-    seletor para alternar entre elas.
+    Aceita um valor único (`premium`) ou CSV
+    (`economica,premium,executiva`). Classes desconhecidas são
+    ignoradas com aviso. Padrão: `economica,premium,executiva` —
+    monitora as três e a página mostra um seletor para alternar
+    entre elas.
     """
-    raw = os.getenv("VIAGEM_CLASSE", "premium,executiva")
+    raw = os.getenv("VIAGEM_CLASSE", "economica,premium,executiva")
     partes = [p.strip().lower() for p in raw.split(",") if p.strip()]
     saida: list[str] = []
     for p in partes:
