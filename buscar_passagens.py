@@ -433,9 +433,91 @@ def _fonte_normalizada(gate: str) -> str:
     return gate
 
 
+_TP_PARTNERS = {
+    "skyscanner": 4115,
+    "kiwi":       4220,
+    "tripcom":    8626,
+    "kayak":      0,
+    "decolar":    0,
+    "booking":    1146,
+}
+
+
+def _tp_redirect(marker: str, partner_id: int, url_final: str) -> str:
+    """Encurta via tp.media com marker — comissão Travelpayouts."""
+    from urllib.parse import quote
+    if not marker or not partner_id:
+        return url_final
+    return (
+        f"https://tp.media/r?marker={marker}&p={partner_id}"
+        f"&u={quote(url_final, safe='')}&campaign_id=100"
+    )
+
+
+def ofertas_agregadores(leg: Leg, marker: str,
+                        classe_codigo: str = "economy",
+                        pax: int = 1) -> list:
+    """Cria linhas de busca em agregadores (Skyscanner / Kayak / Trip.com /
+    Decolar) com link de afiliado quando possível. Sem preço fixo (mostra
+    'Ver preço →') — clique abre o site filtrado pra rota+data."""
+    data = leg.data_iso
+    yymmdd = f"{data[2:4]}{data[5:7]}{data[8:10]}"
+    cabin_sky = {
+        "economy": "economy", "premium-economy": "premium_economy",
+        "business": "business", "first": "first",
+    }.get(classe_codigo, "economy")
+    cabin_kayak = {
+        "economy": "economy", "premium-economy": "premium",
+        "business": "business", "first": "first",
+    }.get(classe_codigo, "economy")
+    cabin_trip = {
+        "economy": "y", "premium-economy": "s",
+        "business": "c", "first": "f",
+    }.get(classe_codigo, "y")
+
+    sky_url = (
+        f"https://www.skyscanner.com.br/transport/flights/"
+        f"{leg.origem_iata.lower()}/{leg.destino_iata.lower()}/"
+        f"{yymmdd}/?adults={pax}&cabinclass={cabin_sky}"
+    )
+    kayak_url = (
+        f"https://www.kayak.com.br/flights/{leg.origem_iata}-"
+        f"{leg.destino_iata}/{data}/{pax}adults/{cabin_kayak}"
+    )
+    trip_url = (
+        f"https://br.trip.com/flights/booking?dcity={leg.origem_iata.lower()}"
+        f"&acity={leg.destino_iata.lower()}&ddate={data}"
+        f"&class={cabin_trip}&quantity={pax}"
+    )
+    decolar_url = (
+        f"https://www.decolar.com/shop/flights/results/oneway/"
+        f"{leg.origem_iata}/{leg.destino_iata}/{data}/{pax}/0/0/"
+    )
+
+    sky_link = _tp_redirect(marker, _TP_PARTNERS["skyscanner"], sky_url)
+    trip_link = _tp_redirect(marker, _TP_PARTNERS["tripcom"], trip_url)
+    kayak_link = kayak_url
+    decolar_link = decolar_url
+
+    def _mk(cia, fonte, link):
+        return {
+            "cia": cia, "saida": "—", "chegada": "—",
+            "duracao": "—", "escalas": "—",
+            "preco_str": "Ver preço →", "preco": None,
+            "melhor": False, "fonte": fonte, "link": link,
+        }
+
+    return [
+        _mk("Buscar ofertas",  "Skyscanner", sky_link),
+        _mk("Buscar ofertas",  "Kayak",      kayak_link),
+        _mk("Buscar ofertas",  "Trip.com",   trip_link),
+        _mk("Buscar ofertas",  "Decolar",    decolar_link),
+    ]
+
+
 def consultar_travelpayouts(leg: Leg, token: str,
                             classe: str = "economy",
-                            limite: int = 30) -> list:
+                            limite: int = 100) -> list:
     """Consulta a Aviasales/Travelpayouts Data API e devolve ofertas
     no mesmo formato das do Google Flights. Retorna lista vazia se falhar."""
     trip_class = {
@@ -586,6 +668,11 @@ def consultar_google_flights(v: Viagem) -> Optional[dict]:
                 "melhor":    bool(getattr(f, "is_best", False)),
                 "fonte":     "Google Flights",
             })
+
+        marker_env = (os.getenv("TRAVELPAYOUTS_MARKER") or "").strip()
+        ofertas.extend(
+            ofertas_agregadores(leg, marker_env, v.classe_codigo, v.pax)
+        )
 
         tp_token = (os.getenv("TRAVELPAYOUTS_TOKEN") or "").strip()
         if tp_token:
@@ -1103,10 +1190,14 @@ def render_markdown(v: Viagem, links: list, dados: Optional[dict]) -> str:
             if nivel:
                 out.append(f"_Nível de preço Google: **{nivel}**_\n")
 
-            por_preco = sorted(
-                td["ofertas"],
-                key=lambda o: (o["preco"] is None, o["preco"] or 0),
+            com_preco = sorted(
+                [o for o in td["ofertas"] if o.get("preco") is not None],
+                key=lambda o: o["preco"],
             )
+            sem_preco = [
+                o for o in td["ofertas"] if o.get("preco") is None
+            ]
+            por_preco = com_preco[:12] + sem_preco
             out.append(
                 "| # | Companhia | Saída | Chegada | Duração | Escalas | "
                 "Preço | Fonte | Reservar |"
@@ -1115,7 +1206,7 @@ def render_markdown(v: Viagem, links: list, dados: Optional[dict]) -> str:
                 "|---|-----------|-------|---------|---------|---------|"
                 "-------|-------|----------|"
             )
-            for j, o in enumerate(por_preco[:15], 1):
+            for j, o in enumerate(por_preco, 1):
                 marca = " ⭐" if o["melhor"] else ""
                 link = gerar_link_oferta(
                     td["leg"], o, v.classe_label, v.pax,
@@ -1475,12 +1566,16 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                 )
                 continue
 
-            por_preco = sorted(
-                td["ofertas"],
-                key=lambda o: (o["preco"] is None, o["preco"] or 0),
+            com_preco = sorted(
+                [o for o in td["ofertas"] if o.get("preco") is not None],
+                key=lambda o: o["preco"],
             )
+            sem_preco = [
+                o for o in td["ofertas"] if o.get("preco") is None
+            ]
+            por_preco = com_preco[:12] + sem_preco
             linhas = []
-            for o in por_preco[:15]:
+            for o in por_preco:
                 badge = (
                     '<span class="badge best">Melhor</span>'
                     if o["melhor"] else ""
