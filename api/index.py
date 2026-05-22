@@ -4,8 +4,8 @@ Handler Vercel — serve a página HTML e POST /atualizar refaz a busca.
 from __future__ import annotations
 
 import json
-import os
 import sys
+import traceback
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -13,9 +13,34 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from buscar_passagens import gerar_pagina_completa, viagem_from_env  # noqa: E402
+try:
+    from buscar_passagens import (  # noqa: E402
+        gerar_pagina_completa,
+        viagem_from_env,
+    )
+    _IMPORT_ERROR: str | None = None
+except Exception:  # pragma: no cover
+    _IMPORT_ERROR = traceback.format_exc()
 
 _cache: dict[str, str] = {}
+
+
+def _pagina_erro(titulo: str, detalhe: str) -> str:
+    safe = detalhe.replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>Erro</title>"
+        "<style>body{font-family:system-ui;background:#0f172a;color:#e2e8f0;"
+        "padding:40px;max-width:900px;margin:0 auto}"
+        "pre{background:#1e293b;padding:16px;border-radius:8px;"
+        "overflow:auto;font-size:13px;line-height:1.5}"
+        "h1{color:#fbbf24}</style></head><body>"
+        f"<h1>{titulo}</h1><pre>{safe}</pre>"
+        "<p style='color:#94a3b8'>Confira as variáveis de ambiente "
+        "<code>VIAGEM_TRECHOS</code>, <code>VIAGEM_CLASSE</code>, "
+        "<code>VIAGEM_MAX_ESCALAS</code> em Settings → Environment "
+        "Variables.</p></body></html>"
+    )
 
 
 def _norm_path(raw: str) -> str:
@@ -26,6 +51,8 @@ def _norm_path(raw: str) -> str:
 
 
 def _atualizar_html() -> str:
+    if _IMPORT_ERROR:
+        raise RuntimeError(_IMPORT_ERROR)
     html = gerar_pagina_completa()
     _cache["html"] = html
     return html
@@ -47,8 +74,15 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         path = _norm_path(self.path)
         if path in ("/", "/index.html"):
-            body = _cache.get("html") or _atualizar_html()
-            self._send(200, body.encode("utf-8"))
+            try:
+                body = _cache.get("html") or _atualizar_html()
+                self._send(200, body.encode("utf-8"))
+            except Exception:
+                pag = _pagina_erro(
+                    "Erro ao gerar a página",
+                    traceback.format_exc(),
+                )
+                self._send(500, pag.encode("utf-8"))
         elif path == "/healthz":
             self._send(200, b"ok", "text/plain")
         else:
@@ -60,10 +94,12 @@ class handler(BaseHTTPRequestHandler):
             try:
                 _atualizar_html()
                 self._send(200, b'{"ok":true}', "application/json")
-            except Exception as e:
+            except Exception:
                 self._send(
                     500,
-                    json.dumps({"ok": False, "erro": str(e)}).encode(),
+                    json.dumps(
+                        {"ok": False, "erro": traceback.format_exc()}
+                    ).encode("utf-8"),
                     "application/json",
                 )
         else:
