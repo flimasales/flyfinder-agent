@@ -1585,7 +1585,10 @@ def monitorar(v: Viagem, args) -> None:
     )
 
     cache = _carregar_cache_alerta()
-    chave = v.rota_resumo  # uma chave de cache por rota
+    # Cache por rota + classe — cada classe tem seu próprio cooldown
+    # para que monitorar Premium e Executiva juntos não cause um
+    # bloquear o alerta do outro.
+    chave = f"{v.rota_resumo}|{v.classe_label}"
 
     while True:
         agora = agora_br()
@@ -1991,6 +1994,22 @@ _HTML_TEMPLATE = """<!doctype html>
     border: 1px solid var(--border);
   }}
   .btn.secondary:hover {{ border-color: var(--accent); color: var(--accent); }}
+  .class-picker {{ display: flex; flex-wrap: wrap; align-items: center;
+    gap: 8px; margin: 16px 0 8px; }}
+  .class-picker .label {{ color: var(--muted); font-size: 12px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    margin-right: 4px; }}
+  .class-picker .pill {{
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 14px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--border);
+    color: var(--text); text-decoration: none;
+    font-size: 13px; font-weight: 600; transition: all .15s;
+  }}
+  .class-picker .pill:hover {{ border-color: var(--accent);
+    color: var(--accent); }}
+  .class-picker .pill.active {{ background: var(--accent);
+    color: #0f172a; border-color: var(--accent); cursor: default; }}
   footer {{ margin-top: 32px; color: var(--muted); font-size: 12px;
     text-align: center; }}
 </style>
@@ -2001,6 +2020,8 @@ _HTML_TEMPLATE = """<!doctype html>
     <h1>✈️ {rota}</h1>
     <p>{trip_label} • {n_trechos} trecho(s) • {pax} adulto(s) • {classe}{filtro_label}</p>
   </header>
+
+  {class_picker_html}
 
   {acoes_html}
 
@@ -2060,7 +2081,8 @@ def _snippet_travelpayouts_drive() -> str:
 
 
 def render_html(v: Viagem, links: list, dados: Optional[dict],
-                run_workflow_url: Optional[str] = None) -> str:
+                run_workflow_url: Optional[str] = None,
+                classes_disponiveis: Optional[list[str]] = None) -> str:
     e = html.escape
 
     trip_labels = {
@@ -2068,6 +2090,30 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
         "round-trip": "Ida e volta",
         "multi-city": "Multi-cidade",
     }
+
+    classes_disponiveis = classes_disponiveis or [v.classe.lower()]
+    class_picker_html = ""
+    if len(classes_disponiveis) > 1:
+        pills: list[str] = []
+        atual = v.classe.lower()
+        for c in classes_disponiveis:
+            label = CLASSES.get(c, ("", c.title()))[1]
+            if c == atual:
+                pills.append(
+                    f'<span class="pill active" '
+                    f'aria-current="page">{e(label)}</span>'
+                )
+            else:
+                pills.append(
+                    f'<a class="pill" href="?classe={e(c)}" '
+                    f'title="Ver preços em {e(label)}">{e(label)}</a>'
+                )
+        class_picker_html = (
+            '<div class="class-picker">'
+            '<span class="label">Classe:</span>'
+            + "".join(pills)
+            + "</div>"
+        )
 
     if run_workflow_url is None:
         run_workflow_url = os.getenv("WORKFLOW_URL") or (
@@ -2349,7 +2395,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
         f'  btn.disabled = true; hint.textContent = '
         f'"Refazendo busca (5-15s)…";'
         f'  try {{'
-        f'    const r = await fetch("/atualizar", '
+        f'    const r = await fetch("/atualizar" + (location.search || ""), '
         f'{{method:"POST",cache:"no-store"}});'
         f'    if (r.ok) {{ location.reload(); return; }}'
         f'    if (r.status === 404 || r.status === 405) {{'
@@ -2384,6 +2430,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
         pax=v.pax,
         classe=e(v.classe_label),
         filtro_label=e(filtro_label),
+        class_picker_html=class_picker_html,
         acoes_html=acoes_html,
         trechos_cards=trechos_cards,
         resumo_html=resumo_html,
@@ -2395,7 +2442,31 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
     )
 
 
-def viagem_from_env() -> Viagem:
+def _classes_from_env() -> list[str]:
+    """Lê VIAGEM_CLASSE e retorna a lista de classes desejadas.
+
+    Aceita um valor único (`premium`) ou CSV (`premium,executiva`).
+    Classes desconhecidas são ignoradas com aviso. Padrão:
+    `premium,executiva` — monitora as duas e a página mostra um
+    seletor para alternar entre elas.
+    """
+    raw = os.getenv("VIAGEM_CLASSE", "premium,executiva")
+    partes = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    saida: list[str] = []
+    for p in partes:
+        if p in CLASSES and p not in saida:
+            saida.append(p)
+        elif p not in CLASSES:
+            print(
+                f"[aviso] VIAGEM_CLASSE: classe desconhecida {p!r}, ignorando.",
+                file=sys.stderr,
+            )
+    if not saida:
+        saida = ["premium"]
+    return saida
+
+
+def viagem_from_env(classe: Optional[str] = None) -> Viagem:
     """Monta a Viagem a partir de variáveis de ambiente (Vercel / Docker).
 
     VIAGEM_TRECHOS aceita um ou mais trechos no formato
@@ -2411,6 +2482,10 @@ def viagem_from_env() -> Viagem:
       'SAO-PAR:16/07/2026;CDG-GRU:01/08/2026'                (recomendado)
       'GRU-IBZ:16/07/2026,CDG-GRU:01/08/2026'                (formato legado)
       'GRU,CGH,VCP-IBZ:16/07/2026;CDG,ORY-GRU:01/08/2026'    (com listas)
+
+    `classe`: se informado, sobrescreve o que vier de VIAGEM_CLASSE.
+    Quando VIAGEM_CLASSE traz mais de uma (CSV), a primeira é usada
+    como padrão.
     """
     raw = os.getenv(
         "VIAGEM_TRECHOS",
@@ -2419,10 +2494,14 @@ def viagem_from_env() -> Viagem:
     legs = [parse_trecho(p) for p in split_trechos(raw)]
     max_raw = os.getenv("VIAGEM_MAX_ESCALAS", "2").strip()
     max_escalas = int(max_raw) if max_raw.isdigit() else None
+    classes = _classes_from_env()
+    escolhida = (classe or classes[0]).lower()
+    if escolhida not in CLASSES:
+        escolhida = classes[0]
     return Viagem(
         legs=legs,
         pax=int(os.getenv("VIAGEM_PAX", "1")),
-        classe=os.getenv("VIAGEM_CLASSE", "premium").lower(),
+        classe=escolhida,
         max_escalas=max_escalas,
     )
 
@@ -2439,13 +2518,25 @@ def workflow_url_padrao() -> str:
 def gerar_pagina_completa(
     v: Optional[Viagem] = None,
     workflow_url: Optional[str] = None,
+    classe: Optional[str] = None,
 ) -> str:
-    """Busca preços e gera HTML completo (usado por --servir e Vercel)."""
-    v = v or viagem_from_env()
+    """Busca preços e gera HTML completo (usado por --servir e Vercel).
+
+    `classe`: quando `v` é None e VIAGEM_CLASSE tem mais de uma classe,
+    escolhe qual usar (padrão = primeira). A página renderizada mostra
+    um seletor para alternar entre as classes configuradas.
+    """
+    classes_env = _classes_from_env()
+    if v is None:
+        v = viagem_from_env(classe=classe)
     wu = workflow_url or workflow_url_padrao()
     links = gerar_deeplinks(v)
     dados = consultar_google_flights(v)
-    return render_html(v, links, dados, run_workflow_url=wu)
+    return render_html(
+        v, links, dados,
+        run_workflow_url=wu,
+        classes_disponiveis=classes_env,
+    )
 
 
 def servir_local(v: Viagem, porta: int = 8765,
@@ -2794,7 +2885,7 @@ def main() -> None:
 
         apikey = args.whatsapp_apikey or os.getenv("CALLMEBOT_APIKEY")
         cache = _carregar_cache_alerta()
-        chave = v.rota_resumo
+        chave = f"{v.rota_resumo}|{v.classe_label}"
         cooldown_h = max(0.5, args.cooldown)
         if not pode_enviar_alerta(
             cache, chave, total, cooldown_h, agora, moeda=moeda,

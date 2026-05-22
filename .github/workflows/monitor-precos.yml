@@ -1,5 +1,6 @@
 # Monitor de preços — roda na nuvem (GitHub Actions), grátis.
 # A cada 2h, checa 9 combinações de aeroporto em SP (GRU/CGH/VCP × GRU/CGH/VCP)
+# em DUAS classes (Premium Economy e Executiva), totalizando 18 buscas por ciclo,
 # pra rota SP→IBZ (16/07/2026) + CDG→SP (01/08/2026).
 # Dispara WhatsApp quando o total estimado ficar até US$ 2.000.
 
@@ -7,8 +8,9 @@ name: Monitor de Preços
 
 on:
   schedule:
-    # 24h por dia, a cada 2h (~360 execuções/mês × ~2,5 min = ~900 min/mês)
-    # Cabe no plano grátis (limite: 2.000 min/mês em repo privado)
+    # 24h por dia, a cada 2h (~360 execuções/mês × ~5 min = ~1.800 min/mês)
+    # 18 buscas por ciclo (9 rotas × 2 classes). Cabe no plano grátis
+    # (limite: 2.000 min/mês em repo privado) com pouca folga.
     - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
@@ -26,7 +28,7 @@ on:
 jobs:
   checar-preco:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -76,40 +78,46 @@ jobs:
 
           # Aeroportos SP equivalentes: usuário tem flexibilidade pra
           # sair/voltar por GRU (Guarulhos), CGH (Congonhas) ou VCP
-          # (Viracopos/Campinas). Itera todas as combinações ida × volta.
-          # Cada rota tem cache de cooldown próprio (chave = rota_resumo).
+          # (Viracopos/Campinas). Itera todas as combinações ida × volta
+          # em duas classes (Premium Economy e Executiva).
+          # Cooldown é por rota + classe (chave = rota_resumo|classe_label).
           IDAS=("GRU" "CGH" "VCP")
           VOLTAS=("GRU" "CGH" "VCP")
+          CLASSES=("premium" "executiva")
 
           set +e
           FALHAS=0
-          for IDA in "${IDAS[@]}"; do
-            for VOLTA in "${VOLTAS[@]}"; do
-              echo ""
-              echo "==============================================="
-              echo "=== Cenário: ${IDA}→IBZ + CDG→${VOLTA}"
-              echo "==============================================="
-              python buscar_passagens.py \
-                --trecho ${IDA}-IBZ:16/07/2026 \
-                --trecho CDG-${VOLTA}:01/08/2026 \
-                --classe premium \
-                --max-escalas 2 \
-                --checar-uma-vez \
-                --ignorar-horario \
-                --whatsapp 11986185400 \
-                --preco-min-usd 0 \
-                --preco-max-usd 2000 \
-                --cooldown 6 \
-                $EXTRA
-              RC=$?
-              if [ $RC -ne 0 ]; then
-                echo "[aviso] cenário ${IDA}→IBZ/${VOLTA} saiu com código $RC — seguindo."
-                FALHAS=$((FALHAS + 1))
-              fi
+          EXECUCOES=0
+          for CLASSE in "${CLASSES[@]}"; do
+            for IDA in "${IDAS[@]}"; do
+              for VOLTA in "${VOLTAS[@]}"; do
+                EXECUCOES=$((EXECUCOES + 1))
+                echo ""
+                echo "==============================================="
+                echo "=== Cenário: ${IDA}→IBZ + CDG→${VOLTA} (${CLASSE})"
+                echo "==============================================="
+                python buscar_passagens.py \
+                  --trecho ${IDA}-IBZ:16/07/2026 \
+                  --trecho CDG-${VOLTA}:01/08/2026 \
+                  --classe ${CLASSE} \
+                  --max-escalas 2 \
+                  --checar-uma-vez \
+                  --ignorar-horario \
+                  --whatsapp 11986185400 \
+                  --preco-min-usd 0 \
+                  --preco-max-usd 2000 \
+                  --cooldown 6 \
+                  $EXTRA
+                RC=$?
+                if [ $RC -ne 0 ]; then
+                  echo "[aviso] cenário ${IDA}→IBZ/${VOLTA} (${CLASSE}) saiu com código $RC — seguindo."
+                  FALHAS=$((FALHAS + 1))
+                fi
+              done
             done
           done
           echo ""
-          echo "=== Fim do ciclo: 9 combinações executadas, $FALHAS falhas ==="
+          echo "=== Fim do ciclo: $EXECUCOES execuções (9 rotas × 2 classes), $FALHAS falhas ==="
           # Sai 0 se pelo menos uma combinação rodou — falhas individuais
           # são logadas mas não derrubam o job (rotas com cache vazio etc).
           exit 0

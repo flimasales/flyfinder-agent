@@ -1,5 +1,8 @@
 """
 Handler Vercel — serve a página HTML e POST /atualizar refaz a busca.
+
+A URL aceita `?classe=premium` ou `?classe=executiva` para alternar
+entre as classes configuradas em VIAGEM_CLASSE (CSV).
 """
 from __future__ import annotations
 
@@ -8,6 +11,7 @@ import sys
 import traceback
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -15,6 +19,7 @@ if str(ROOT) not in sys.path:
 
 try:
     from buscar_passagens import (  # noqa: E402
+        _classes_from_env,
         gerar_pagina_completa,
         viagem_from_env,
     )
@@ -50,11 +55,31 @@ def _norm_path(raw: str) -> str:
     return p
 
 
-def _atualizar_html() -> str:
+def _classe_da_url(raw: str) -> str | None:
+    """Lê `?classe=...` da URL e retorna a classe válida correspondente.
+    Devolve None quando ausente/inválida — `gerar_pagina_completa`
+    aplica o default (primeira de VIAGEM_CLASSE)."""
+    try:
+        qs = parse_qs(urlparse(raw).query)
+    except Exception:
+        return None
+    valor = (qs.get("classe") or [None])[0]
+    if not valor:
+        return None
+    valor = valor.strip().lower()
+    try:
+        validas = _classes_from_env()
+    except Exception:
+        return valor
+    return valor if valor in validas else None
+
+
+def _atualizar_html(classe: str | None = None) -> str:
     if _IMPORT_ERROR:
         raise RuntimeError(_IMPORT_ERROR)
-    html = gerar_pagina_completa()
-    _cache["html"] = html
+    html = gerar_pagina_completa(classe=classe)
+    chave = f"html:{classe or '_default'}"
+    _cache[chave] = html
     return html
 
 
@@ -74,8 +99,10 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         path = _norm_path(self.path)
         if path in ("/", "/index.html"):
+            classe = _classe_da_url(self.path)
+            chave = f"html:{classe or '_default'}"
             try:
-                body = _cache.get("html") or _atualizar_html()
+                body = _cache.get(chave) or _atualizar_html(classe)
                 self._send(200, body.encode("utf-8"))
             except Exception:
                 pag = _pagina_erro(
@@ -92,7 +119,8 @@ class handler(BaseHTTPRequestHandler):
         path = _norm_path(self.path)
         if path == "/atualizar":
             try:
-                _atualizar_html()
+                classe = _classe_da_url(self.path)
+                _atualizar_html(classe)
                 self._send(200, b'{"ok":true}', "application/json")
             except Exception:
                 self._send(
