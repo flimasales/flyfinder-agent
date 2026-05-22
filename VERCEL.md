@@ -31,6 +31,7 @@ Opcional:
 | Nome | Uso |
 |------|-----|
 | `WORKFLOW_URL` | Link do GitHub Actions (só se abrir HTML estático) |
+| `TRAVELPAYOUTS_TOKEN` | Adiciona Skyscanner / Kiwi / Trip.com / Aviasales na tabela (cadastre-se em https://www.travelpayouts.com → Tools → API; é grátis) |
 
 **Não** coloque `CALLMEBOT_APIKEY` nem `GIST_TOKEN` na Vercel — esses ficam só no **GitHub Actions** (alertas WhatsApp).
 

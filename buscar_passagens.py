@@ -401,6 +401,97 @@ def normalizar_para_brl(preco_num: Optional[float],
     return brl, f"~R$ {brl:,.0f} ({preco_str})".replace(",", ".")
 
 
+_TP_API = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates"
+_GATE_FONTE = {
+    "Aviasales": "Aviasales",
+    "JetRadar": "JetRadar",
+    "Jetradar": "JetRadar",
+    "KIWI": "Kiwi.com",
+    "Kiwi": "Kiwi.com",
+    "Trip": "Trip.com",
+    "TripCom": "Trip.com",
+    "Tripcom": "Trip.com",
+    "Skyscanner": "Skyscanner",
+    "Kupibilet": "Kupibilet",
+    "Tickets": "Tickets",
+    "OneTwoTrip": "OneTwoTrip",
+    "Biletix": "Biletix",
+    "Mytrip": "Mytrip",
+    "Gotogate": "Gotogate",
+    "Edreams": "eDreams",
+    "Booking": "Booking.com",
+    "Travix": "Travix",
+}
+
+
+def _fonte_normalizada(gate: str) -> str:
+    if not gate:
+        return "Travelpayouts"
+    for k, v in _GATE_FONTE.items():
+        if k.lower() in gate.lower():
+            return v
+    return gate
+
+
+def consultar_travelpayouts(leg: Leg, token: str,
+                            classe: str = "economy",
+                            limite: int = 30) -> list:
+    """Consulta a Aviasales/Travelpayouts Data API e devolve ofertas
+    no mesmo formato das do Google Flights. Retorna lista vazia se falhar."""
+    trip_class = {
+        "economy": 0, "business": 1, "first": 2,
+        "premium-economy": 0,  # API não distingue PE
+    }.get(classe, 0)
+    params = urlencode({
+        "origin": leg.origem_iata,
+        "destination": leg.destino_iata,
+        "departure_at": leg.data_iso,
+        "one_way": "true",
+        "currency": "brl",
+        "sorting": "price",
+        "direct": "false",
+        "limit": str(limite),
+        "page": "1",
+        "trip_class": str(trip_class),
+        "token": token,
+    })
+    url = f"{_TP_API}?{params}"
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "flyfinder-agent/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        print(f"[aviso] Travelpayouts falhou: {e}", file=sys.stderr)
+        return []
+
+    if not data.get("success"):
+        print(f"[aviso] Travelpayouts: {data.get('error')}", file=sys.stderr)
+        return []
+
+    ofertas = []
+    for it in data.get("data", []) or []:
+        preco_num = float(it.get("price", 0)) or None
+        if not preco_num:
+            continue
+        cia = it.get("airline") or "—"
+        gate = it.get("gate") or ""
+        ofertas.append({
+            "cia":       cia,
+            "saida":     (it.get("departure_at") or "")[11:16] or "—",
+            "chegada":   (it.get("return_at") or "")[11:16] or "—",
+            "duracao":   f"{(it.get('duration') or 0) // 60}h "
+                         f"{(it.get('duration') or 0) % 60:02d}min",
+            "escalas":   int(it.get("transfers") or 0),
+            "preco_str": formatar_brl(preco_num),
+            "preco":     preco_num,
+            "melhor":    False,
+            "fonte":     _fonte_normalizada(gate),
+        })
+    return ofertas
+
+
 def consultar_google_flights(v: Viagem) -> Optional[dict]:
     """Consulta o Google Flights via fast-flights, um trecho por vez
     (busca one-way para cada leg). Retorna dict com lista por trecho
@@ -460,7 +551,22 @@ def consultar_google_flights(v: Viagem) -> Optional[dict]:
                 "preco_str": preco_str,
                 "preco":     preco_brl,
                 "melhor":    bool(getattr(f, "is_best", False)),
+                "fonte":     "Google Flights",
             })
+
+        tp_token = os.getenv("TRAVELPAYOUTS_TOKEN")
+        if tp_token:
+            tp_ofertas = consultar_travelpayouts(
+                leg, tp_token, classe=v.classe_codigo,
+            )
+            if tp_ofertas:
+                print(
+                    f"[travelpayouts] +{len(tp_ofertas)} ofertas "
+                    f"({', '.join(sorted({o['fonte'] for o in tp_ofertas}))})",
+                    file=sys.stderr,
+                )
+            ofertas.extend(tp_ofertas)
+
         trechos.append({
             "leg": leg,
             "ofertas": ofertas,
@@ -951,21 +1057,22 @@ def render_markdown(v: Viagem, links: list, dados: Optional[dict]) -> str:
             )
             out.append(
                 "| # | Companhia | Saída | Chegada | Duração | Escalas | "
-                "Preço | Reservar |"
+                "Preço | Fonte | Reservar |"
             )
             out.append(
                 "|---|-----------|-------|---------|---------|---------|"
-                "-------|----------|"
+                "-------|-------|----------|"
             )
-            for j, o in enumerate(por_preco[:10], 1):
+            for j, o in enumerate(por_preco[:15], 1):
                 marca = " ⭐" if o["melhor"] else ""
                 link = gerar_link_oferta(
                     td["leg"], o, v.classe_label, v.pax,
                 )
+                fonte = o.get("fonte") or "Google Flights"
                 out.append(
                     f"| {j} | {o['cia']}{marca} | {o['saida']} | "
                     f"{o['chegada']} | {o['duracao']} | {o['escalas']} | "
-                    f"{o['preco_str']} | [Buscar]({link}) |"
+                    f"{o['preco_str']} | {fonte} | [Buscar]({link}) |"
                 )
             out.append("")
     else:
@@ -1080,6 +1187,13 @@ _HTML_TEMPLATE = """<!doctype html>
   .open-icon {{ color: var(--muted); font-size: 12px; margin-left: 4px;
     opacity: .6; transition: opacity .15s; }}
   tr.clickable:hover .open-icon {{ opacity: 1; color: var(--accent); }}
+  .fonte {{ display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; white-space: nowrap; }}
+  .fonte-google     {{ background: rgba(56,189,248,.15); color: #38bdf8; }}
+  .fonte-skyscanner {{ background: rgba(168,85,247,.15); color: #a855f7; }}
+  .fonte-kiwi       {{ background: rgba(244,114,182,.15); color: #f472b6; }}
+  .fonte-trip       {{ background: rgba(251,146,60,.15); color: #fb923c; }}
+  .fonte-outras     {{ background: rgba(148,163,184,.15); color: #94a3b8; }}
   .badge {{
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 600; margin-left: 6px;
@@ -1300,6 +1414,14 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                 link_oferta = gerar_link_oferta(
                     td["leg"], o, v.classe_label, v.pax,
                 )
+                fonte = o.get("fonte") or "Google Flights"
+                cls_fonte = (
+                    "google" if "Google" in fonte
+                    else "skyscanner" if "Skyscanner" in fonte
+                    else "kiwi" if "Kiwi" in fonte
+                    else "trip" if "Trip" in fonte
+                    else "outras"
+                )
                 linhas.append(
                     f'<tr class="clickable" '
                     f'onclick="window.open({json.dumps(link_oferta)}, '
@@ -1312,6 +1434,8 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                     f"<td>{e(str(o['escalas']))}</td>"
                     f"<td class='price'>{e(str(o['preco_str']))} "
                     f'<span class="open-icon">↗</span></td>'
+                    f'<td><span class="fonte fonte-{cls_fonte}">'
+                    f"{e(fonte)}</span></td>"
                     f"</tr>"
                 )
             nivel = td.get("current_price") or "—"
@@ -1324,6 +1448,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                 f"<table><thead><tr>"
                 f"<th>Companhia</th><th>Saída</th><th>Chegada</th>"
                 f"<th>Duração</th><th>Escalas</th><th>Preço</th>"
+                f"<th>Fonte</th>"
                 f"</tr></thead><tbody>{''.join(linhas)}</tbody></table>"
             )
         detalhes_html = "<h2>Ofertas por trecho (Google Flights)</h2>" + \
