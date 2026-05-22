@@ -1,7 +1,7 @@
 # Monitor de preços — roda na nuvem (GitHub Actions), grátis.
 # A cada 2h, checa 9 combinações de aeroporto em SP (GRU/CGH/VCP × GRU/CGH/VCP)
 # em DUAS classes (Premium Economy e Executiva), totalizando 18 buscas por ciclo,
-# pra rota SP→IBZ (16/07/2026) + CDG→SP (01/08/2026).
+# pra rota SP→IBZ (16/07/2026) + CDG/BRU→SP (01/08/2026).
 # Dispara WhatsApp quando o total estimado ficar até US$ 2.000.
 
 name: Monitor de Preços
@@ -94,11 +94,11 @@ jobs:
                 EXECUCOES=$((EXECUCOES + 1))
                 echo ""
                 echo "==============================================="
-                echo "=== Cenário: ${IDA}→IBZ + CDG→${VOLTA} (${CLASSE})"
+                echo "=== Cenário: ${IDA}→IBZ + CDG/BRU→${VOLTA} (${CLASSE})"
                 echo "==============================================="
                 python buscar_passagens.py \
                   --trecho ${IDA}-IBZ:16/07/2026 \
-                  --trecho CDG-${VOLTA}:01/08/2026 \
+                  --trecho CDG,BRU-${VOLTA}:01/08/2026 \
                   --classe ${CLASSE} \
                   --max-escalas 2 \
                   --checar-uma-vez \
@@ -110,7 +110,7 @@ jobs:
                   $EXTRA
                 RC=$?
                 if [ $RC -ne 0 ]; then
-                  echo "[aviso] cenário ${IDA}→IBZ/${VOLTA} (${CLASSE}) saiu com código $RC — seguindo."
+                  echo "[aviso] cenário ${IDA}→IBZ + CDG/BRU→${VOLTA} (${CLASSE}) saiu com código $RC — seguindo."
                   FALHAS=$((FALHAS + 1))
                 fi
               done
