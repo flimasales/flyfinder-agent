@@ -40,10 +40,12 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -1259,19 +1261,51 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
 
     acoes_html = (
         f'<div class="actions">'
-        f'<a class="btn primary" href="{e(run_workflow_url)}" '
-        f'target="_blank" rel="noopener">'
-        f'🔄 Reexecutar busca agora</a>'
+        f'<button class="btn primary" id="btnReexecutar" type="button" '
+        f'onclick="reexecutarBusca()">'
+        f'<span id="btnIcon">🔄</span>&nbsp;'
+        f'<span id="btnText">Reexecutar busca agora</span></button>'
         f'<a class="btn secondary" '
         f'href="{e(links[0]["url"])}" target="_blank" rel="noopener">'
         f'🔎 Abrir no Google Flights</a>'
         f'</div>'
-        f'<p style="color:var(--muted);font-size:12px;margin:4px 0 16px">'
-        f'O botão verde abre o GitHub Actions — lá clique em '
-        f'<b>Run workflow</b>, marque <b>ignorar_horario</b> e '
-        f'<b>Run workflow</b> de novo. Em ~1 min você recebe um '
-        f'novo alerta no WhatsApp com preços atualizados.'
-        f'</p>'
+        f'<p id="acoesHint" style="color:var(--muted);font-size:12px;'
+        f'margin:4px 0 16px">Carregando…</p>'
+        f'<script>'
+        f'const WORKFLOW_URL = {json.dumps(run_workflow_url)};'
+        f'const hint = document.getElementById("acoesHint");'
+        f'const btnText = document.getElementById("btnText");'
+        f'const btnIcon = document.getElementById("btnIcon");'
+        f'const isLocal = location.protocol === "http:" && '
+        f'(location.hostname === "localhost" || '
+        f'location.hostname === "127.0.0.1");'
+        f'if (isLocal) {{'
+        f'  hint.innerHTML = "Clique no botão verde para refazer a busca '
+        f'agora no servidor local. A página recarrega com os preços '
+        f'atualizados (leva ~5s).";'
+        f'}} else {{'
+        f'  hint.innerHTML = "Para atualizar agora <b>do seu computador</b>, '
+        f'rode <code>python buscar_passagens.py --servir</code> e abra '
+        f'<code>http://localhost:8765</code>. Pra rodar <b>na nuvem</b> '
+        f'(WhatsApp), o botão abre o GitHub Actions — marque '
+        f'<b>ignorar_horario</b> e <b>Run workflow</b>.";'
+        f'}}'
+        f'async function reexecutarBusca() {{'
+        f'  if (!isLocal) {{ window.open(WORKFLOW_URL, "_blank"); return; }}'
+        f'  btnIcon.textContent = "⏳"; btnText.textContent = "Buscando…";'
+        f'  document.getElementById("btnReexecutar").disabled = true;'
+        f'  try {{'
+        f'    const r = await fetch("/atualizar", {{method:"POST"}});'
+        f'    if (r.ok) {{ location.reload(); }}'
+        f'    else {{ alert("Erro: " + r.status); }}'
+        f'  }} catch (err) {{ alert("Falhou: " + err); }}'
+        f'  finally {{'
+        f'    btnIcon.textContent = "🔄";'
+        f'    btnText.textContent = "Reexecutar busca agora";'
+        f'    document.getElementById("btnReexecutar").disabled = false;'
+        f'  }}'
+        f'}}'
+        f'</script>'
     )
 
     return _HTML_TEMPLATE.format(
@@ -1289,6 +1323,76 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
         cias_html=cias_html,
         gerado_em=datetime.now().strftime("%d/%m/%Y %H:%M"),
     )
+
+
+def servir_local(v: Viagem, porta: int = 8765,
+                  abrir: bool = True) -> None:
+    """Sobe um mini-servidor HTTP local. O HTML tem um botão que chama
+    POST /atualizar para refazer a busca e recarregar com novos preços."""
+    estado = {"html": "", "ultima_busca": None}
+
+    def atualizar() -> None:
+        print(f"[servir] refazendo busca de {v.rota_resumo}...",
+              file=sys.stderr)
+        links_dl = gerar_deeplinks(v)
+        dados = consultar_google_flights(v)
+        estado["html"] = render_html(v, links_dl, dados)
+        estado["ultima_busca"] = datetime.now()
+        print(f"[servir] busca atualizada às "
+              f"{estado['ultima_busca'].strftime('%H:%M:%S')}",
+              file=sys.stderr)
+
+    atualizar()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *a):
+            sys.stderr.write(
+                f"[servir] {self.address_string()} - {fmt % a}\n"
+            )
+
+        def _resp(self, code: int, body: bytes,
+                  ctype: str = "text/html; charset=utf-8") -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):  # noqa: N802
+            if self.path in ("/", "/index.html"):
+                self._resp(200, estado["html"].encode("utf-8"))
+            elif self.path == "/healthz":
+                self._resp(200, b"ok", "text/plain")
+            else:
+                self._resp(404, b"nao encontrado", "text/plain")
+
+        def do_POST(self):  # noqa: N802
+            if self.path == "/atualizar":
+                try:
+                    atualizar()
+                    self._resp(200, b'{"ok":true}', "application/json")
+                except Exception as e:
+                    self._resp(500,
+                               json.dumps({"ok": False, "erro": str(e)})
+                               .encode("utf-8"), "application/json")
+            else:
+                self._resp(404, b"nao encontrado", "text/plain")
+
+    srv = ThreadingHTTPServer(("127.0.0.1", porta), Handler)
+    url = f"http://localhost:{porta}/"
+    print(f"\n=== Servidor local em {url} (Ctrl+C para parar) ===\n",
+          file=sys.stderr)
+    if abrir:
+        threading.Thread(
+            target=lambda: (time.sleep(0.6), webbrowser.open_new_tab(url)),
+            daemon=True,
+        ).start()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[servir] encerrando.", file=sys.stderr)
+        srv.shutdown()
 
 
 def coletar_interativo() -> Viagem:
@@ -1365,6 +1469,11 @@ def main() -> None:
         "--html", nargs="?", const="resultado.html", metavar="ARQUIVO",
         help="Gera página HTML e abre no navegador "
              "(arquivo padrão: resultado.html)",
+    )
+    p.add_argument(
+        "--servir", nargs="?", const=8765, type=int, metavar="PORTA",
+        help="Sobe servidor local na porta (padrão 8765). O botão "
+             "'Reexecutar busca' atualiza os preços ao vivo.",
     )
 
     g = p.add_argument_group("monitor de preços + WhatsApp")
@@ -1464,6 +1573,10 @@ def main() -> None:
         v = coletar_interativo()
         if args.max_escalas is not None:
             v.max_escalas = args.max_escalas
+
+    if args.servir:
+        servir_local(v, porta=args.servir, abrir=True)
+        return
 
     if args.monitor and not args.checar_uma_vez:
         monitorar(v, args)
