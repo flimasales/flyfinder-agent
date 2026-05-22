@@ -1158,16 +1158,44 @@ def calcular_total_estimado(dados: Optional[dict],
                             max_escalas: Optional[int]) -> Optional[float]:
     """Soma o melhor preço de cada trecho. Retorna None se não der
     para somar todos os trechos (algum sem preço)."""
+    total, _, _ = calcular_total_e_moeda(dados, max_escalas)
+    return total
+
+
+def calcular_total_e_moeda(
+    dados: Optional[dict], max_escalas: Optional[int],
+) -> tuple[Optional[float], str, list]:
+    """Soma o melhor preço de cada trecho e detecta a moeda predominante
+    do total. Retorna (total, moeda, melhores).
+
+    moeda pode ser:
+      - "BRL": todos os trechos já estão em BRL (ou foram convertidos)
+      - "USD"/"EUR"/"GBP": todos em uma única moeda estrangeira (sem
+        conversão disponível)
+      - "MIX": trechos em moedas diferentes — total é só aproximação
+    """
     if not dados:
-        return None
+        return None, "BRL", []
     total = 0.0
+    melhores: list = []
     for td in dados.get("trechos", []):
         ofertas = _filtrar_escalas(td["ofertas"], max_escalas)
         com_preco = [o for o in ofertas if o["preco"] is not None]
         if not com_preco:
-            return None
-        total += min(o["preco"] for o in com_preco)
-    return total if total > 0 else None
+            return None, "BRL", melhores
+        m = min(com_preco, key=lambda o: o["preco"])
+        melhores.append(m)
+        total += m["preco"]
+
+    moedas = {_moeda_da_oferta(m) for m in melhores if m}
+    if not moedas or moedas == {"BRL"}:
+        moeda = "BRL"
+    elif len(moedas) == 1:
+        moeda = next(iter(moedas))
+    else:
+        moeda = "MIX"
+
+    return (total if total > 0 else None), moeda, melhores
 
 
 def formatar_brl(v: float) -> str:
@@ -1181,6 +1209,19 @@ _MOEDA_SIMBOLO_EXIBICAO = {
     "EUR": "€",
     "GBP": "£",
 }
+
+
+def formatar_moeda(valor: float, moeda: str = "BRL") -> str:
+    """Formata um valor monetário com símbolo + separadores adequados.
+    BRL usa estilo brasileiro (R$ 12.345,67); USD/EUR/GBP usam estilo
+    inglês (US$ 12,345.67)."""
+    moeda = (moeda or "BRL").upper()
+    if moeda == "BRL":
+        return formatar_brl(valor)
+    simbolo = _MOEDA_SIMBOLO_EXIBICAO.get(moeda, f"{moeda} ")
+    if moeda == "USD":
+        simbolo = "US$ "
+    return f"{simbolo}{valor:,.2f}"
 
 
 def _moeda_da_oferta(oferta: Optional[dict]) -> str:
@@ -1299,29 +1340,71 @@ def _salvar_cache_alerta(d: dict) -> None:
         print(f"[aviso] não consegui salvar cache: {e}", file=sys.stderr)
 
 
-def avaliar_alerta(total: float, preco_min: float,
-                    preco_max: float) -> tuple[Optional[str], Optional[str]]:
-    """Retorna (nível, emoji) se deve alertar, ou (None, None)."""
-    if total < preco_min:
-        return (
-            f"promoção excepcional (abaixo de {formatar_brl(preco_min)})",
-            "🔥",
-        )
-    if total <= preco_max:
-        return (
-            f"dentro da faixa-alvo ({formatar_brl(preco_min)}–"
-            f"{formatar_brl(preco_max)})",
-            "🎯",
-        )
+def avaliar_alerta(
+    total: float,
+    preco_min: float = 0,
+    preco_max: Optional[float] = None,
+    moeda: str = "BRL",
+    preco_min_usd: Optional[float] = None,
+    preco_max_usd: Optional[float] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Decide se o total estimado dispara alerta.
+
+    Compara contra a faixa-alvo na MOEDA do total:
+      - moeda='BRL' → usa (preco_min, preco_max) em reais.
+        Se preco_max for None, alerta em BRL fica DESATIVADO.
+      - moeda='USD' → usa (preco_min_usd, preco_max_usd) se fornecidos.
+        Se preco_max_usd for None, alerta em USD fica DESATIVADO.
+      - moeda='EUR'/'GBP'/'MIX' → sem alerta (sem threshold definido).
+
+    Retorna (nível, emoji) se deve alertar, ou (None, None).
+    """
+    if moeda == "BRL" and preco_max is not None:
+        if total < preco_min:
+            return (
+                f"promoção excepcional (abaixo de "
+                f"{formatar_brl(preco_min)})",
+                "🔥",
+            )
+        if total <= preco_max:
+            return (
+                f"dentro da faixa-alvo ({formatar_brl(preco_min)}–"
+                f"{formatar_brl(preco_max)})",
+                "🎯",
+            )
+        return None, None
+
+    if moeda == "USD" and preco_max_usd is not None:
+        pmin = preco_min_usd or 0.0
+        if total < pmin:
+            return (
+                f"promoção excepcional (abaixo de "
+                f"{formatar_moeda(pmin, 'USD')})",
+                "🔥",
+            )
+        if total <= preco_max_usd:
+            return (
+                f"dentro da faixa-alvo "
+                f"({formatar_moeda(pmin, 'USD')}–"
+                f"{formatar_moeda(preco_max_usd, 'USD')})",
+                "🎯",
+            )
+        return None, None
+
     return None, None
 
 
 def pode_enviar_alerta(cache: dict, chave: str, total: float,
-                       cooldown_h: float, agora: datetime) -> bool:
+                       cooldown_h: float, agora: datetime,
+                       moeda: str = "BRL") -> bool:
     info = cache.get(chave, {})
     ult_preco = info.get("ultimo_preco")
+    ult_moeda = info.get("moeda", "BRL")
     ult_ts = info.get("timestamp")
     if ult_preco is None or not ult_ts:
+        return True
+    # Se a moeda mudou, o total não é comparável — pode enviar
+    if ult_moeda != moeda:
         return True
     try:
         dt_ult = datetime.fromisoformat(ult_ts)
@@ -1336,7 +1419,8 @@ def pode_enviar_alerta(cache: dict, chave: str, total: float,
 
 def montar_mensagem_alerta(v: Viagem, total: float, nivel: str,
                            emoji: str,
-                           url_relatorio: Optional[str] = None) -> str:
+                           url_relatorio: Optional[str] = None,
+                           moeda: str = "BRL") -> str:
     trechos_txt = " + ".join(
         f"{L.origem_iata}→{L.destino_iata} {L.data_br}" for L in v.legs
     )
@@ -1345,7 +1429,7 @@ def montar_mensagem_alerta(v: Viagem, total: float, nivel: str,
         f"Rota: {v.rota_resumo}",
         f"Trechos: {trechos_txt}",
         f"Classe: {v.classe_label}",
-        f"Total estimado: {formatar_brl(total)}",
+        f"Total estimado: {formatar_moeda(total, moeda)}",
         f"Status: {nivel}",
     ]
     if url_relatorio:
@@ -1473,11 +1557,25 @@ def monitorar(v: Viagem, args) -> None:
 
     intervalo_s = max(60, args.intervalo * 60)
     cooldown_h = max(0.5, args.cooldown)
+    if args.preco_max is not None:
+        faixa_brl_txt = (
+            f"Faixa-alvo BRL: {formatar_brl(args.preco_min)} a "
+            f"{formatar_brl(args.preco_max)}\n"
+        )
+    else:
+        faixa_brl_txt = "Faixa-alvo BRL: (desativada)\n"
+    if args.preco_max_usd is not None:
+        faixa_usd_txt = (
+            f"Faixa-alvo USD: {formatar_moeda(args.preco_min_usd, 'USD')} "
+            f"a {formatar_moeda(args.preco_max_usd, 'USD')}\n"
+        )
+    else:
+        faixa_usd_txt = "Faixa-alvo USD: (desativada)\n"
     print(
         f"\n=== Monitor de preços ativado ===\n"
         f"Rota:        {v.rota_resumo}\n"
-        f"Faixa-alvo:  {formatar_brl(args.preco_min)} a "
-        f"{formatar_brl(args.preco_max)}\n"
+        f"{faixa_brl_txt}"
+        f"{faixa_usd_txt}"
         f"Janela:      {args.horario_inicio}h às {args.horario_fim}h\n"
         f"Intervalo:   {args.intervalo} min entre checagens\n"
         f"Cooldown:    {cooldown_h}h entre alertas iguais\n"
@@ -1506,7 +1604,7 @@ def monitorar(v: Viagem, args) -> None:
 
         print(f"[{marca}] checando preços...", file=sys.stderr)
         dados = consultar_google_flights(v)
-        total = calcular_total_estimado(dados, v.max_escalas)
+        total, moeda, _ = calcular_total_e_moeda(dados, v.max_escalas)
         if total is None:
             print(
                 f"[{marca}] não foi possível calcular o total estimado "
@@ -1517,21 +1615,36 @@ def monitorar(v: Viagem, args) -> None:
             time.sleep(intervalo_s)
             continue
 
-        print(f"[{marca}] total estimado: {formatar_brl(total)}",
-              file=sys.stderr)
+        print(
+            f"[{marca}] total estimado: {formatar_moeda(total, moeda)} "
+            f"(moeda={moeda})",
+            file=sys.stderr,
+        )
 
-        nivel, emoji = avaliar_alerta(total, args.preco_min, args.preco_max)
+        nivel, emoji = avaliar_alerta(
+            total, args.preco_min, args.preco_max,
+            moeda=moeda,
+            preco_min_usd=args.preco_min_usd,
+            preco_max_usd=args.preco_max_usd,
+        )
 
         if not nivel:
+            if moeda == "BRL" and args.preco_max is not None:
+                alvo = formatar_brl(args.preco_max)
+            elif moeda == "USD" and args.preco_max_usd is not None:
+                alvo = formatar_moeda(args.preco_max_usd, "USD")
+            else:
+                alvo = f"(sem faixa-alvo definida pra {moeda})"
             print(
-                f"[{marca}] acima do alvo "
-                f"(> {formatar_brl(args.preco_max)}). Sem alerta.",
+                f"[{marca}] fora da faixa-alvo (> {alvo}). Sem alerta.",
                 file=sys.stderr,
             )
             time.sleep(intervalo_s)
             continue
 
-        envia = pode_enviar_alerta(cache, chave, total, cooldown_h, agora)
+        envia = pode_enviar_alerta(
+            cache, chave, total, cooldown_h, agora, moeda=moeda,
+        )
         if not envia:
             print(
                 f"[{marca}] alerta semelhante recente "
@@ -1550,13 +1663,16 @@ def monitorar(v: Viagem, args) -> None:
                 if url_html:
                     print(f"[{marca}] relatório: {url_html}",
                           file=sys.stderr)
-            msg = montar_mensagem_alerta(v, total, nivel, emoji, url_html)
+            msg = montar_mensagem_alerta(
+                v, total, nivel, emoji, url_html, moeda=moeda,
+            )
             r = enviar_whatsapp_callmebot(
                 args.whatsapp or "", msg, apikey or "", dry_run=args.dry_run,
             )
             print(f"[{marca}] WhatsApp → {r}", file=sys.stderr)
             cache[chave] = {
                 "ultimo_preco": total,
+                "moeda": moeda,
                 "timestamp": agora.isoformat(),
                 "nivel": nivel,
                 "url": url_html,
@@ -2530,9 +2646,18 @@ def main() -> None:
     g.add_argument("--preco-min", type=float, default=0,
                    metavar="VALOR",
                    help="Limite inferior da faixa-alvo (R$)")
-    g.add_argument("--preco-max", type=float, default=999999,
+    g.add_argument("--preco-max", type=float, default=None,
                    metavar="VALOR",
-                   help="Limite superior da faixa-alvo (R$)")
+                   help="Limite superior da faixa-alvo (R$). Se omitido, "
+                        "o alerta em BRL fica DESATIVADO.")
+    g.add_argument("--preco-min-usd", type=float, default=0,
+                   metavar="VALOR",
+                   help="[opcional] Limite inferior da faixa-alvo em US$ "
+                        "(usado quando o total vier em USD sem conversão)")
+    g.add_argument("--preco-max-usd", type=float, default=None,
+                   metavar="VALOR",
+                   help="[opcional] Limite superior da faixa-alvo em US$ "
+                        "(ativa o alerta também pra totais em USD)")
     g.add_argument("--horario-inicio", type=int, default=22, metavar="H",
                    help="Hora (0-23) em que o monitor começa a checar")
     g.add_argument("--horario-fim", type=int, default=1, metavar="H",
@@ -2637,19 +2762,32 @@ def main() -> None:
             )
             return
         dados = consultar_google_flights(v)
-        total = calcular_total_estimado(dados, v.max_escalas)
+        total, moeda, _ = calcular_total_e_moeda(dados, v.max_escalas)
         if total is None:
             print(f"[{marca}] sem total estimado disponível.",
                   file=sys.stderr)
             return
-        print(f"[{marca}] total estimado: {formatar_brl(total)}",
-              file=sys.stderr)
+        print(
+            f"[{marca}] total estimado: {formatar_moeda(total, moeda)} "
+            f"(moeda={moeda})",
+            file=sys.stderr,
+        )
 
-        nivel, emoji = avaliar_alerta(total, args.preco_min, args.preco_max)
+        nivel, emoji = avaliar_alerta(
+            total, args.preco_min, args.preco_max,
+            moeda=moeda,
+            preco_min_usd=args.preco_min_usd,
+            preco_max_usd=args.preco_max_usd,
+        )
         if not nivel:
+            if moeda == "BRL" and args.preco_max is not None:
+                alvo = formatar_brl(args.preco_max)
+            elif moeda == "USD" and args.preco_max_usd is not None:
+                alvo = formatar_moeda(args.preco_max_usd, "USD")
+            else:
+                alvo = f"(sem faixa-alvo definida pra {moeda})"
             print(
-                f"[{marca}] fora da faixa-alvo "
-                f"(> {formatar_brl(args.preco_max)}). Sem alerta.",
+                f"[{marca}] fora da faixa-alvo (> {alvo}). Sem alerta.",
                 file=sys.stderr,
             )
             return
@@ -2658,7 +2796,9 @@ def main() -> None:
         cache = _carregar_cache_alerta()
         chave = v.rota_resumo
         cooldown_h = max(0.5, args.cooldown)
-        if not pode_enviar_alerta(cache, chave, total, cooldown_h, agora):
+        if not pode_enviar_alerta(
+            cache, chave, total, cooldown_h, agora, moeda=moeda,
+        ):
             print(
                 f"[{marca}] alerta semelhante recente "
                 f"(cooldown {cooldown_h}h). Pulando.",
@@ -2675,7 +2815,9 @@ def main() -> None:
             if url_html:
                 print(f"[{marca}] relatório: {url_html}", file=sys.stderr)
 
-        msg = montar_mensagem_alerta(v, total, nivel, emoji, url_html)
+        msg = montar_mensagem_alerta(
+            v, total, nivel, emoji, url_html, moeda=moeda,
+        )
         if args.whatsapp and (apikey or args.dry_run):
             r = enviar_whatsapp_callmebot(
                 args.whatsapp, msg, apikey or "", dry_run=args.dry_run,
@@ -2684,6 +2826,7 @@ def main() -> None:
             if not args.dry_run:
                 cache[chave] = {
                     "ultimo_preco": total,
+                    "moeda": moeda,
                     "timestamp": agora.isoformat(),
                     "nivel": nivel,
                     "url": url_html,
