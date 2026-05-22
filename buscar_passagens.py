@@ -558,19 +558,93 @@ def pode_enviar_alerta(cache: dict, chave: str, total: float,
 
 
 def montar_mensagem_alerta(v: Viagem, total: float, nivel: str,
-                           emoji: str) -> str:
+                           emoji: str,
+                           url_relatorio: Optional[str] = None) -> str:
     trechos_txt = " + ".join(
         f"{L.origem_iata}→{L.destino_iata} {L.data_br}" for L in v.legs
     )
-    return (
-        f"{emoji} ALERTA DE PREÇO\n"
-        f"Rota: {v.rota_resumo}\n"
-        f"Trechos: {trechos_txt}\n"
-        f"Classe: {v.classe_label}\n"
-        f"Total estimado: {formatar_brl(total)}\n"
-        f"Status: {nivel}\n"
-        f"Conferir agora antes de mudar!"
+    linhas = [
+        f"{emoji} ALERTA DE PREÇO",
+        f"Rota: {v.rota_resumo}",
+        f"Trechos: {trechos_txt}",
+        f"Classe: {v.classe_label}",
+        f"Total estimado: {formatar_brl(total)}",
+        f"Status: {nivel}",
+    ]
+    if url_relatorio:
+        linhas.append(f"Relatório: {url_relatorio}")
+    linhas.append("Conferir agora antes de mudar!")
+    return "\n".join(linhas)
+
+
+def _post_multipart(url: str, campos: list[tuple[str, str]],
+                    arquivo: Optional[tuple[str, str, bytes]] = None,
+                    timeout: int = 30) -> str:
+    """POST multipart/form-data simples (sem deps). Retorna corpo decodificado.
+    campos: lista de (nome, valor). arquivo: (nome_campo, filename, bytes)."""
+    boundary = "----flyfinder" + str(int(time.time() * 1000))
+    partes: list[bytes] = []
+    for nome, val in campos:
+        partes.append(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{nome}"\r\n\r\n'
+            f"{val}\r\n".encode("utf-8")
+        )
+    if arquivo:
+        nome_campo, filename, conteudo = arquivo
+        partes.append(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{nome_campo}"; '
+            f'filename="{filename}"\r\n'
+            f'Content-Type: text/html; charset=utf-8\r\n\r\n'.encode("utf-8")
+        )
+        partes.append(conteudo)
+        partes.append(b"\r\n")
+    partes.append(f"--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(partes)
+    req = urllib.request.Request(
+        url, data=body,
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "User-Agent": "flyfinder-agent/1.0",
+        },
     )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", errors="ignore").strip()
+
+
+def upload_html_publico(html_str: str,
+                        nome: str = "relatorio.html") -> Optional[str]:
+    """Sobe o HTML para um hospedeiro anônimo e retorna a URL pública.
+    Tenta catbox.moe (permanente) e cai pra 0x0.st (expira) como fallback.
+    Retorna None se ambos falharem — o alerta segue sem link."""
+    conteudo = html_str.encode("utf-8")
+
+    try:
+        url = _post_multipart(
+            "https://catbox.moe/user/api.php",
+            campos=[("reqtype", "fileupload")],
+            arquivo=("fileToUpload", nome, conteudo),
+        )
+        if url.startswith("http"):
+            return url
+        print(f"[aviso] catbox.moe respondeu: {url[:140]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[aviso] catbox.moe falhou: {e}", file=sys.stderr)
+
+    try:
+        url = _post_multipart(
+            "https://0x0.st",
+            campos=[],
+            arquivo=("file", nome, conteudo),
+        )
+        if url.startswith("http"):
+            return url
+        print(f"[aviso] 0x0.st respondeu: {url[:140]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[aviso] 0x0.st falhou: {e}", file=sys.stderr)
+
+    return None
 
 
 def monitorar(v: Viagem, args) -> None:
@@ -655,7 +729,17 @@ def monitorar(v: Viagem, args) -> None:
             )
 
         if envia:
-            msg = montar_mensagem_alerta(v, total, nivel, emoji)
+            url_html = None
+            if not args.sem_html_link:
+                links_dl = gerar_deeplinks(v)
+                html_str = render_html(v, links_dl, dados)
+                print(f"[{marca}] subindo relatório HTML...",
+                      file=sys.stderr)
+                url_html = upload_html_publico(html_str)
+                if url_html:
+                    print(f"[{marca}] relatório: {url_html}",
+                          file=sys.stderr)
+            msg = montar_mensagem_alerta(v, total, nivel, emoji, url_html)
             r = enviar_whatsapp_callmebot(
                 args.whatsapp or "", msg, apikey or "", dry_run=args.dry_run,
             )
@@ -664,6 +748,7 @@ def monitorar(v: Viagem, args) -> None:
                 "ultimo_preco": total,
                 "timestamp": agora.isoformat(),
                 "nivel": nivel,
+                "url": url_html,
             }
             _salvar_cache_alerta(cache)
 
@@ -1238,6 +1323,8 @@ def main() -> None:
     g.add_argument("--ignorar-horario", action="store_true",
                    help="Checa preços mesmo fora da janela "
                         "(útil para teste manual no GitHub Actions)")
+    g.add_argument("--sem-html-link", action="store_true",
+                   help="Não anexa link da página HTML detalhada no alerta")
 
     args = p.parse_args()
 
@@ -1345,7 +1432,16 @@ def main() -> None:
             )
             return
 
-        msg = montar_mensagem_alerta(v, total, nivel, emoji)
+        url_html = None
+        if not args.sem_html_link:
+            links_dl = gerar_deeplinks(v)
+            html_str = render_html(v, links_dl, dados)
+            print(f"[{marca}] subindo relatório HTML...", file=sys.stderr)
+            url_html = upload_html_publico(html_str)
+            if url_html:
+                print(f"[{marca}] relatório: {url_html}", file=sys.stderr)
+
+        msg = montar_mensagem_alerta(v, total, nivel, emoji, url_html)
         if args.whatsapp and (apikey or args.dry_run):
             r = enviar_whatsapp_callmebot(
                 args.whatsapp, msg, apikey or "", dry_run=args.dry_run,
@@ -1356,6 +1452,7 @@ def main() -> None:
                     "ultimo_preco": total,
                     "timestamp": agora.isoformat(),
                     "nivel": nivel,
+                    "url": url_html,
                 }
                 _salvar_cache_alerta(cache)
         else:
