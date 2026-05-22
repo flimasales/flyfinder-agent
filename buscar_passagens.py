@@ -183,6 +183,22 @@ def parse_trecho(s: str) -> Leg:
     return Leg(orig.upper(), dest.upper(), parse_data_br(data_str))
 
 
+def gerar_link_oferta(leg: Leg, oferta: dict, classe_label: str,
+                      pax: int = 1) -> str:
+    """Gera URL do Google Flights para uma oferta específica de um trecho.
+    Inclui a companhia para refinar a busca."""
+    cia = (oferta.get("cia") or "").strip()
+    base = (
+        f"Voo só ida de {leg.origem_iata} para {leg.destino_iata} "
+        f"em {leg.data_iso} {pax} passageiros classe {classe_label}"
+    )
+    if cia and cia != "—":
+        base += f" pela {cia}"
+    return "https://www.google.com/travel/flights?" + urlencode(
+        {"q": base, "curr": "BRL", "hl": "pt-BR"}
+    )
+
+
 def gerar_deeplinks(v: Viagem) -> List[dict]:
     """Gera links de busca preenchidos para cada site."""
     pax = v.pax
@@ -935,18 +951,21 @@ def render_markdown(v: Viagem, links: list, dados: Optional[dict]) -> str:
             )
             out.append(
                 "| # | Companhia | Saída | Chegada | Duração | Escalas | "
-                "Preço |"
+                "Preço | Reservar |"
             )
             out.append(
                 "|---|-----------|-------|---------|---------|---------|"
-                "-------|"
+                "-------|----------|"
             )
             for j, o in enumerate(por_preco[:10], 1):
                 marca = " ⭐" if o["melhor"] else ""
+                link = gerar_link_oferta(
+                    td["leg"], o, v.classe_label, v.pax,
+                )
                 out.append(
                     f"| {j} | {o['cia']}{marca} | {o['saida']} | "
                     f"{o['chegada']} | {o['duracao']} | {o['escalas']} | "
-                    f"{o['preco_str']} |"
+                    f"{o['preco_str']} | [Buscar]({link}) |"
                 )
             out.append("")
     else:
@@ -1055,6 +1074,12 @@ _HTML_TEMPLATE = """<!doctype html>
     letter-spacing: .04em; }}
   tr:last-child td {{ border-bottom: none; }}
   tr:hover td {{ background: rgba(56,189,248,.06); }}
+  tr.clickable {{ cursor: pointer; transition: all .15s; }}
+  tr.clickable:hover td {{ background: rgba(56,189,248,.12); }}
+  tr.clickable:hover td:first-child {{ color: var(--accent); }}
+  .open-icon {{ color: var(--muted); font-size: 12px; margin-left: 4px;
+    opacity: .6; transition: opacity .15s; }}
+  tr.clickable:hover .open-icon {{ opacity: 1; color: var(--accent); }}
   .badge {{
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 600; margin-left: 6px;
@@ -1272,14 +1297,21 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                     '<span class="badge best">Melhor</span>'
                     if o["melhor"] else ""
                 )
+                link_oferta = gerar_link_oferta(
+                    td["leg"], o, v.classe_label, v.pax,
+                )
                 linhas.append(
-                    f"<tr>"
+                    f'<tr class="clickable" '
+                    f'onclick="window.open({json.dumps(link_oferta)}, '
+                    f"'_blank','noopener')\" "
+                    f'title="Abrir esta oferta no Google Flights">'
                     f"<td>{e(o['cia'])}{badge}</td>"
                     f"<td>{e(str(o['saida']))}</td>"
                     f"<td>{e(str(o['chegada']))}</td>"
                     f"<td>{e(str(o['duracao']))}</td>"
                     f"<td>{e(str(o['escalas']))}</td>"
-                    f"<td class='price'>{e(str(o['preco_str']))}</td>"
+                    f"<td class='price'>{e(str(o['preco_str']))} "
+                    f'<span class="open-icon">↗</span></td>'
                     f"</tr>"
                 )
             nivel = td.get("current_price") or "—"
