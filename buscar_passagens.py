@@ -2479,7 +2479,7 @@ def viagem_from_env(classe: Optional[str] = None) -> Viagem:
     vírgula entre trechos também funciona graças a um reconhecedor por
     regex — ambos os formatos abaixo são válidos:
 
-      'SAO-IBZ:16/07/2026;CDG-SAO:01/08/2026;BRU-SAO:01/08/2026'  (Vercel)
+      'SAO-IBZ:16/07/2026;CDG-SAO:01/08/2026;BRU-SAO:01/08/2026;AMS-SAO:01/08/2026' (Vercel)
       'SAO-PAR:16/07/2026;CDG-GRU:01/08/2026'                (recomendado)
       'GRU-IBZ:16/07/2026,CDG-GRU:01/08/2026'                (formato legado)
       'GRU,CGH,VCP-IBZ:16/07/2026;CDG,ORY-GRU:01/08/2026'    (com listas)
@@ -2490,7 +2490,8 @@ def viagem_from_env(classe: Optional[str] = None) -> Viagem:
     """
     raw = os.getenv(
         "VIAGEM_TRECHOS",
-        "SAO-IBZ:16/07/2026;CDG-SAO:01/08/2026;BRU-SAO:01/08/2026",
+        "SAO-IBZ:16/07/2026;CDG-SAO:01/08/2026;"
+        "BRU-SAO:01/08/2026;AMS-SAO:01/08/2026",
     )
     legs = [parse_trecho(p) for p in split_trechos(raw)]
     max_raw = os.getenv("VIAGEM_MAX_ESCALAS", "2").strip()
