@@ -492,7 +492,12 @@ def ofertas_agregadores(leg: Leg, marker: str,
 
     sky_link = _tp_redirect(marker, _TP_PARTNERS["skyscanner"], sky_url)
     trip_link = _tp_redirect(marker, _TP_PARTNERS["tripcom"], trip_url)
-    kayak_link = kayak_url
+    kayak_aff = (os.getenv("KAYAK_AFFILIATE_ID") or "").strip()
+    if kayak_aff:
+        sep = "&" if "?" in kayak_url else "?"
+        kayak_link = f"{kayak_url}{sep}a={kayak_aff}"
+    else:
+        kayak_link = kayak_url
 
     def _mk(cia, fonte, link):
         return {
