@@ -50,9 +50,11 @@ Troque `SEU_USUARIO` pelo seu usuário do GitHub.
 
 1. No GitHub: repositório → **Settings** → **Secrets and variables** → **Actions**
 2. **New repository secret**
-3. Nome: `CALLMEBOT_APIKEY`
-4. Valor: a API key que o CallMeBot enviou no WhatsApp
+3. Nome: `CALLMEBOT_APIKEY` (exatamente assim)
+4. Valor: a API key numérica que o CallMeBot enviou no WhatsApp
 5. **Add secret**
+
+> **Segurança:** nunca coloque a API key no código nem em commits. Só no secret do GitHub.
 
 ---
 
