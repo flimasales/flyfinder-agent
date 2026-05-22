@@ -448,10 +448,12 @@ def consultar_travelpayouts(leg: Leg, token: str,
         "departure_at": leg.data_iso,
         "one_way": "true",
         "currency": "brl",
+        "market": "br",
         "sorting": "price",
         "direct": "false",
         "limit": str(limite),
         "page": "1",
+        "unique": "false",
         "trip_class": str(trip_class),
         "token": token,
     })
@@ -467,7 +469,20 @@ def consultar_travelpayouts(leg: Leg, token: str,
         return []
 
     if not data.get("success"):
-        print(f"[aviso] Travelpayouts: {data.get('error')}", file=sys.stderr)
+        print(
+            f"[aviso] Travelpayouts API: success=false "
+            f"error={data.get('error')!r}",
+            file=sys.stderr,
+        )
+        return []
+
+    n_raw = len(data.get("data") or [])
+    if n_raw == 0:
+        print(
+            "[aviso] Travelpayouts: API ok mas sem dados em cache "
+            f"para {leg.origem_iata}->{leg.destino_iata} em {leg.data_iso}.",
+            file=sys.stderr,
+        )
         return []
 
     ofertas = []
@@ -554,18 +569,37 @@ def consultar_google_flights(v: Viagem) -> Optional[dict]:
                 "fonte":     "Google Flights",
             })
 
-        tp_token = os.getenv("TRAVELPAYOUTS_TOKEN")
+        tp_token = (os.getenv("TRAVELPAYOUTS_TOKEN") or "").strip()
         if tp_token:
+            print(
+                f"[travelpayouts] consultando token=***{tp_token[-4:]} "
+                f"trecho={leg.origem_iata}->{leg.destino_iata} "
+                f"data={leg.data_iso}...",
+                file=sys.stderr,
+            )
             tp_ofertas = consultar_travelpayouts(
                 leg, tp_token, classe=v.classe_codigo,
             )
             if tp_ofertas:
+                fontes = sorted({o['fonte'] for o in tp_ofertas})
                 print(
                     f"[travelpayouts] +{len(tp_ofertas)} ofertas "
-                    f"({', '.join(sorted({o['fonte'] for o in tp_ofertas}))})",
+                    f"({', '.join(fontes)})",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[travelpayouts] 0 ofertas retornadas "
+                    "(token inválido, rota sem dados, ou data muito próxima)",
                     file=sys.stderr,
                 )
             ofertas.extend(tp_ofertas)
+        else:
+            print(
+                "[travelpayouts] SEM token — defina TRAVELPAYOUTS_TOKEN "
+                "pra ativar Skyscanner/Kiwi/Trip.com",
+                file=sys.stderr,
+            )
 
         trechos.append({
             "leg": leg,
