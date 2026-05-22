@@ -2489,7 +2489,7 @@ def viagem_from_env(classe: Optional[str] = None) -> Viagem:
     """
     raw = os.getenv(
         "VIAGEM_TRECHOS",
-        "SAO-IBZ:16/07/2026;CDG-SAO:01/08/2026",
+        "SAO-IBZ:16/07/2026;CDG,BRU-SAO:01/08/2026",
     )
     legs = [parse_trecho(p) for p in split_trechos(raw)]
     max_raw = os.getenv("VIAGEM_MAX_ESCALAS", "2").strip()
