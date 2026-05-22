@@ -1276,22 +1276,24 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
         f'const hint = document.getElementById("acoesHint");'
         f'const btnText = document.getElementById("btnText");'
         f'const btnIcon = document.getElementById("btnIcon");'
-        f'const isLocal = location.protocol === "http:" && '
+        f'const isInteractive = location.protocol === "http:" && '
         f'(location.hostname === "localhost" || '
-        f'location.hostname === "127.0.0.1");'
-        f'if (isLocal) {{'
+        f'location.hostname === "127.0.0.1" || '
+        f'location.hostname.endsWith(".vercel.app"));'
+        f'if (isInteractive) {{'
+        f'  const onde = location.hostname.endsWith(".vercel.app") '
+        f'? "na Vercel" : "no servidor local";'
         f'  hint.innerHTML = "Clique no botão verde para refazer a busca '
-        f'agora no servidor local. A página recarrega com os preços '
-        f'atualizados (leva ~5s).";'
+        f'" + onde + ". A página recarrega com preços atualizados '
+        f'(leva ~5–15s).";'
         f'}} else {{'
-        f'  hint.innerHTML = "Para atualizar agora <b>do seu computador</b>, '
-        f'rode <code>python buscar_passagens.py --servir</code> e abra '
-        f'<code>http://localhost:8765</code>. Pra rodar <b>na nuvem</b> '
-        f'(WhatsApp), o botão abre o GitHub Actions — marque '
-        f'<b>ignorar_horario</b> e <b>Run workflow</b>.";'
+        f'  hint.innerHTML = "Abra pelo link da Vercel ou rode '
+        f'<code>python buscar_passagens.py --servir</code> em '
+        f'<code>http://localhost:8765</code> para atualizar aqui.";'
         f'}}'
         f'async function reexecutarBusca() {{'
-        f'  if (!isLocal) {{ window.open(WORKFLOW_URL, "_blank"); return; }}'
+        f'  if (!isInteractive) {{ '
+        f'window.open(WORKFLOW_URL, "_blank"); return; }}'
         f'  btnIcon.textContent = "⏳"; btnText.textContent = "Buscando…";'
         f'  document.getElementById("btnReexecutar").disabled = true;'
         f'  try {{'
@@ -1325,6 +1327,44 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
     )
 
 
+def viagem_from_env() -> Viagem:
+    """Monta a Viagem a partir de variáveis de ambiente (Vercel / Docker)."""
+    raw = os.getenv(
+        "VIAGEM_TRECHOS",
+        "GRU-IBZ:16/07/2026,CDG-GRU:01/08/2026",
+    )
+    legs = [parse_trecho(p.strip()) for p in raw.split(",") if p.strip()]
+    max_raw = os.getenv("VIAGEM_MAX_ESCALAS", "2").strip()
+    max_escalas = int(max_raw) if max_raw.isdigit() else None
+    return Viagem(
+        legs=legs,
+        pax=int(os.getenv("VIAGEM_PAX", "1")),
+        classe=os.getenv("VIAGEM_CLASSE", "premium").lower(),
+        max_escalas=max_escalas,
+    )
+
+
+def workflow_url_padrao() -> str:
+    owner = os.getenv("VERCEL_GIT_REPO_OWNER", "flimasales")
+    slug = os.getenv("VERCEL_GIT_REPO_SLUG", "flyfinder-agent")
+    return os.getenv("WORKFLOW_URL") or (
+        f"https://github.com/{owner}/{slug}/actions/"
+        "workflows/monitor-precos.yml"
+    )
+
+
+def gerar_pagina_completa(
+    v: Optional[Viagem] = None,
+    workflow_url: Optional[str] = None,
+) -> str:
+    """Busca preços e gera HTML completo (usado por --servir e Vercel)."""
+    v = v or viagem_from_env()
+    wu = workflow_url or workflow_url_padrao()
+    links = gerar_deeplinks(v)
+    dados = consultar_google_flights(v)
+    return render_html(v, links, dados, run_workflow_url=wu)
+
+
 def servir_local(v: Viagem, porta: int = 8765,
                   abrir: bool = True) -> None:
     """Sobe um mini-servidor HTTP local. O HTML tem um botão que chama
@@ -1334,9 +1374,7 @@ def servir_local(v: Viagem, porta: int = 8765,
     def atualizar() -> None:
         print(f"[servir] refazendo busca de {v.rota_resumo}...",
               file=sys.stderr)
-        links_dl = gerar_deeplinks(v)
-        dados = consultar_google_flights(v)
-        estado["html"] = render_html(v, links_dl, dados)
+        estado["html"] = gerar_pagina_completa(v)
         estado["ultima_busca"] = datetime.now()
         print(f"[servir] busca atualizada às "
               f"{estado['ultima_busca'].strftime('%H:%M:%S')}",

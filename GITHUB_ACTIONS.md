@@ -1,5 +1,7 @@
 # Monitor na nuvem (GitHub Actions)
 
+> **Página com botão “Reexecutar busca” (atualiza preços na hora):** veja [VERCEL.md](VERCEL.md) — deploy grátis na Vercel.
+
 Roda **sozinho**, **grátis**, **sem PC ligado**. Checa preços a cada 30 min entre **22h e 01h** (Brasília) e manda WhatsApp se o total estiver entre **R$ 10.000 e R$ 12.000**.
 
 ---
