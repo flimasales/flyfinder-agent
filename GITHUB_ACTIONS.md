@@ -46,15 +46,28 @@ Troque `SEU_USUARIO` pelo seu usuário do GitHub.
 
 ---
 
-## Passo 4 — Configurar o secret (API key)
+## Passo 4 — Configurar os secrets
 
-1. No GitHub: repositório → **Settings** → **Secrets and variables** → **Actions**
-2. **New repository secret**
-3. Nome: `CALLMEBOT_APIKEY` (exatamente assim)
-4. Valor: a API key numérica que o CallMeBot enviou no WhatsApp
-5. **Add secret**
+No GitHub: repositório → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
 
-> **Segurança:** nunca coloque a API key no código nem em commits. Só no secret do GitHub.
+### 4.1 — `CALLMEBOT_APIKEY` (obrigatório, envia WhatsApp)
+
+- Name: `CALLMEBOT_APIKEY`
+- Secret: a key numérica que o CallMeBot enviou no WhatsApp
+
+### 4.2 — `GIST_TOKEN` (opcional mas recomendado — link da página HTML no WhatsApp renderizando corretamente)
+
+Sem este secret, o alerta ainda chega, mas o link aponta para `catbox.moe` que serve HTML como texto puro (mostra código-fonte em vez da página).
+
+1. Acesse https://github.com/settings/tokens?type=beta
+2. **Generate new token** → **Fine-grained** ou clássico tanto faz
+3. Para token clássico: marque **só** o escopo `gist` (nada mais)
+4. **Generate token** → copie o valor (`ghp_...`)
+5. Cadastre como secret no repositório:
+   - Name: `GIST_TOKEN`
+   - Secret: o `ghp_...` copiado
+
+> **Segurança:** nunca coloque API keys ou tokens no código. Só nos secrets do GitHub. Tokens podem ser revogados a qualquer momento em https://github.com/settings/tokens.
 
 ---
 

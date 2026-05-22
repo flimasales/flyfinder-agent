@@ -613,12 +613,47 @@ def _post_multipart(url: str, campos: list[tuple[str, str]],
         return r.read().decode("utf-8", errors="ignore").strip()
 
 
+def _upload_gist(html_str: str, nome: str, token: str) -> Optional[str]:
+    """Cria um gist secreto com o HTML e devolve URL htmlpreview que
+    renderiza corretamente. Retorna None se falhar."""
+    payload = json.dumps({
+        "description": "Relatório de passagens (flyfinder-agent)",
+        "public": False,
+        "files": {nome: {"content": html_str}},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.github.com/gists",
+        data=payload,
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "flyfinder-agent/1.0",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    raw = data.get("files", {}).get(nome, {}).get("raw_url")
+    if not raw:
+        return None
+    return f"https://htmlpreview.github.io/?{raw}"
+
+
 def upload_html_publico(html_str: str,
                         nome: str = "relatorio.html") -> Optional[str]:
-    """Sobe o HTML para um hospedeiro anônimo e retorna a URL pública.
-    Tenta catbox.moe (permanente) e cai pra 0x0.st (expira) como fallback.
-    Retorna None se ambos falharem — o alerta segue sem link."""
+    """Sobe o HTML para um hospedeiro público e retorna a URL.
+    Cascata: GitHub Gist (renderiza correto) → catbox.moe → 0x0.st.
+    Retorna None se todos falharem — o alerta segue sem link."""
     conteudo = html_str.encode("utf-8")
+    token = os.getenv("GIST_TOKEN") or os.getenv("GH_TOKEN")
+
+    if token:
+        try:
+            url = _upload_gist(html_str, nome, token)
+            if url:
+                return url
+        except Exception as e:
+            print(f"[aviso] gist falhou: {e}", file=sys.stderr)
 
     try:
         url = _post_multipart(
@@ -634,8 +669,7 @@ def upload_html_publico(html_str: str,
 
     try:
         url = _post_multipart(
-            "https://0x0.st",
-            campos=[],
+            "https://0x0.st", campos=[],
             arquivo=("file", nome, conteudo),
         )
         if url.startswith("http"):
@@ -993,6 +1027,25 @@ _HTML_TEMPLATE = """<!doctype html>
     color: var(--warn); padding: 12px 16px; border-radius: 10px;
     font-size: 13px; margin: 20px 0;
   }}
+  .actions {{ display: flex; flex-wrap: wrap; gap: 10px;
+    margin: 16px 0 8px; }}
+  .btn {{
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 12px 18px; border-radius: 12px; font-weight: 600;
+    text-decoration: none; font-size: 14px;
+    transition: all .15s; cursor: pointer; border: none;
+  }}
+  .btn.primary {{
+    background: linear-gradient(135deg, #34d399 0%, #10b981 100%);
+    color: #0f172a;
+  }}
+  .btn.primary:hover {{ transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(52,211,153,.3); }}
+  .btn.secondary {{
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border);
+  }}
+  .btn.secondary:hover {{ border-color: var(--accent); color: var(--accent); }}
   footer {{ margin-top: 32px; color: var(--muted); font-size: 12px;
     text-align: center; }}
 </style>
@@ -1003,6 +1056,8 @@ _HTML_TEMPLATE = """<!doctype html>
     <h1>✈️ {rota}</h1>
     <p>{trip_label} • {n_trechos} trecho(s) • {pax} adulto(s) • {classe}{filtro_label}</p>
   </header>
+
+  {acoes_html}
 
   <h2>Trechos da viagem</h2>
   {trechos_cards}
@@ -1038,7 +1093,8 @@ _HTML_TEMPLATE = """<!doctype html>
 """
 
 
-def render_html(v: Viagem, links: list, dados: Optional[dict]) -> str:
+def render_html(v: Viagem, links: list, dados: Optional[dict],
+                run_workflow_url: Optional[str] = None) -> str:
     e = html.escape
 
     trip_labels = {
@@ -1046,6 +1102,12 @@ def render_html(v: Viagem, links: list, dados: Optional[dict]) -> str:
         "round-trip": "Ida e volta",
         "multi-city": "Multi-cidade",
     }
+
+    if run_workflow_url is None:
+        run_workflow_url = os.getenv("WORKFLOW_URL") or (
+            "https://github.com/flimasales/flyfinder-agent/actions/"
+            "workflows/monitor-precos.yml"
+        )
 
     trechos_cards = "".join(
         f'<div class="leg-card">'
@@ -1195,6 +1257,23 @@ def render_html(v: Viagem, links: list, dados: Optional[dict]) -> str:
         if v.max_escalas is not None else ""
     )
 
+    acoes_html = (
+        f'<div class="actions">'
+        f'<a class="btn primary" href="{e(run_workflow_url)}" '
+        f'target="_blank" rel="noopener">'
+        f'🔄 Reexecutar busca agora</a>'
+        f'<a class="btn secondary" '
+        f'href="{e(links[0]["url"])}" target="_blank" rel="noopener">'
+        f'🔎 Abrir no Google Flights</a>'
+        f'</div>'
+        f'<p style="color:var(--muted);font-size:12px;margin:4px 0 16px">'
+        f'O botão verde abre o GitHub Actions — lá clique em '
+        f'<b>Run workflow</b>, marque <b>ignorar_horario</b> e '
+        f'<b>Run workflow</b> de novo. Em ~1 min você recebe um '
+        f'novo alerta no WhatsApp com preços atualizados.'
+        f'</p>'
+    )
+
     return _HTML_TEMPLATE.format(
         rota=e(v.rota_resumo),
         trip_label=e(trip_labels.get(v.trip_type, v.trip_type)),
@@ -1202,6 +1281,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict]) -> str:
         pax=v.pax,
         classe=e(v.classe_label),
         filtro_label=e(filtro_label),
+        acoes_html=acoes_html,
         trechos_cards=trechos_cards,
         resumo_html=resumo_html,
         detalhes_html=detalhes_html,
