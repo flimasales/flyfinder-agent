@@ -1,0 +1,17 @@
+# cache de alertas (persistido via GitHub Actions cache)
+.alerta_cache.json
+
+# saídas locais
+resultado.html
+*.md.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
