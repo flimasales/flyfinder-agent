@@ -41,10 +41,12 @@ def _pagina_erro(titulo: str, detalhe: str) -> str:
         "overflow:auto;font-size:13px;line-height:1.5}"
         "h1{color:#fbbf24}</style></head><body>"
         f"<h1>{titulo}</h1><pre>{safe}</pre>"
-        "<p style='color:#94a3b8'>Confira as variáveis de ambiente "
-        "<code>VIAGEM_TRECHOS</code>, <code>VIAGEM_CLASSE</code>, "
-        "<code>VIAGEM_MAX_ESCALAS</code> em Settings → Environment "
-        "Variables.</p></body></html>"
+        "<p style='color:#94a3b8'>Confira em Settings → Environment "
+        "Variables: <code>VIAGEM_TRECHOS</code> (ex.: "
+        "<code>SAO-IBZ:16/07/2026;CDG-SAO:01/08/2026;BRU-SAO:01/08/2026</code>), "
+        "<code>VIAGEM_CLASSE</code>, <code>VIAGEM_MAX_ESCALAS</code>. "
+        "Após alterar, rode <code>POST /atualizar</code> ou redeploy.</p>"
+        "</body></html>"
     )
 
 
