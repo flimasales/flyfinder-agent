@@ -489,15 +489,10 @@ def ofertas_agregadores(leg: Leg, marker: str,
         f"&acity={leg.destino_iata.lower()}&ddate={data}"
         f"&class={cabin_trip}&quantity={pax}"
     )
-    decolar_url = (
-        f"https://www.decolar.com/shop/flights/results/oneway/"
-        f"{leg.origem_iata}/{leg.destino_iata}/{data}/{pax}/0/0/"
-    )
 
     sky_link = _tp_redirect(marker, _TP_PARTNERS["skyscanner"], sky_url)
     trip_link = _tp_redirect(marker, _TP_PARTNERS["tripcom"], trip_url)
     kayak_link = kayak_url
-    decolar_link = decolar_url
 
     def _mk(cia, fonte, link):
         return {
@@ -511,7 +506,6 @@ def ofertas_agregadores(leg: Leg, marker: str,
         _mk("Buscar ofertas",  "Skyscanner", sky_link),
         _mk("Buscar ofertas",  "Kayak",      kayak_link),
         _mk("Buscar ofertas",  "Trip.com",   trip_link),
-        _mk("Buscar ofertas",  "Decolar",    decolar_link),
     ]
 
 
