@@ -772,6 +772,53 @@ def formatar_brl(v: float) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+_MOEDA_SIMBOLO_EXIBICAO = {
+    "BRL": "R$",
+    "USD": "$",
+    "EUR": "€",
+    "GBP": "£",
+}
+
+
+def _moeda_da_oferta(oferta: Optional[dict]) -> str:
+    """Detecta a moeda do preço *já considerando* eventual conversão.
+    Se o preço veio com '(sem conversão)', a moeda é a do número original
+    (ex.: USD), não BRL."""
+    if not oferta:
+        return "BRL"
+    s = str(oferta.get("preco_str") or "")
+    if "(sem conversão)" in s:
+        s = s.replace("(sem conversão)", "").strip()
+    return _detectar_moeda(s) or "BRL"
+
+
+def _formatar_total_estimado(
+    total: float, melhores: list
+) -> tuple[str, bool]:
+    """Formata o total considerando a moeda das melhores ofertas.
+
+    Retorna (texto_formatado, convertido_para_brl). Quando todas as
+    ofertas estão na mesma moeda estrangeira (cotação indisponível),
+    mostramos o total nessa moeda em vez de fingir que é BRL.
+    """
+    moedas = {
+        _moeda_da_oferta(m)
+        for m in melhores
+        if m and m.get("preco") is not None
+    }
+    if not moedas or moedas == {"BRL"}:
+        return formatar_brl(total), True
+    if len(moedas) == 1:
+        moeda = next(iter(moedas))
+        simbolo = _MOEDA_SIMBOLO_EXIBICAO.get(moeda, f"{moeda} ")
+        valor = f"{total:,.0f}".replace(",", ".")
+        return f"{simbolo}{valor} (sem conversão)", False
+    return (
+        f"~{formatar_brl(total)} (moedas mistas — total aproximado)",
+        False,
+    )
+
+
 CALLMEBOT_API = "https://api.callmebot.com/whatsapp.php"
 ALERTA_CACHE = Path(__file__).parent / ".alerta_cache.json"
 
@@ -1166,10 +1213,9 @@ def render_markdown(v: Viagem, links: list, dados: Optional[dict]) -> str:
                     f"{L.data_br}): _sem ofertas retornadas_"
                 )
         if total_ok:
+            total_str, _ = _formatar_total_estimado(total, melhores)
             out.append(
-                f"- **Total estimado (passagens separadas):** "
-                f"R$ {total:,.2f}".replace(",", "X")
-                .replace(".", ",").replace("X", ".")
+                f"- **Total estimado (passagens separadas):** {total_str}"
             )
         out.append("")
 
@@ -1497,11 +1543,13 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
 
     if trechos_dados:
         cards = []
+        melhores = []
         total = 0.0
         total_ok = True
         for i, td in enumerate(trechos_dados, 1):
             L = td["leg"]
             m = _melhor_oferta(td["ofertas"])
+            melhores.append(m)
             if m:
                 if m.get("preco") is not None:
                     total += m["preco"]
@@ -1528,9 +1576,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
 
         total_html = ""
         if total_ok and total > 0:
-            total_str = f"R$ {total:,.2f}".replace(",", "X").replace(
-                ".", ","
-            ).replace("X", ".")
+            total_str, _ = _formatar_total_estimado(total, melhores)
             total_html = (
                 f'<div class="total">Total estimado: {e(total_str)}'
                 f'<small>Soma do melhor preço de cada trecho '
