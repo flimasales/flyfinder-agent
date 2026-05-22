@@ -6,8 +6,9 @@ name: Monitor de Preços
 
 on:
   schedule:
-    # Horário de Brasília (UTC-3): 22h–01h ≈ 01h–04h UTC
-    - cron: "0,30 1,2,3 * * *"
+    # 24h por dia, a cada 2h (~360 execuções/mês × ~3 min = ~1.080 min/mês)
+    # Cabe no plano grátis (limite: 2.000 min/mês em repo privado)
+    - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
       ignorar_horario:
@@ -73,10 +74,9 @@ jobs:
             --classe premium \
             --max-escalas 2 \
             --checar-uma-vez \
+            --ignorar-horario \
             --whatsapp 11986185400 \
             --preco-min 10000 \
             --preco-max 12000 \
-            --horario-inicio 22 \
-            --horario-fim 1 \
             --cooldown 6 \
             $EXTRA

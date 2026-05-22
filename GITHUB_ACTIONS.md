@@ -96,18 +96,23 @@ Veja o resultado em **Actions** → clique na execução → **checar-preco**.
 
 ---
 
-## Horários (referência)
+## Frequência
 
-| Horário Brasília | Horário UTC (cron GitHub) |
-|------------------|---------------------------|
-| 22:00            | 01:00                     |
-| 22:30            | 01:30                     |
-| 23:00            | 02:00                     |
-| 23:30            | 02:30                     |
-| 00:00            | 03:00                     |
-| 00:30            | 03:30                     |
+Roda **24h por dia, a cada 2 horas** (cron `0 */2 * * *`).
 
-O script usa fuso **America/Sao_Paulo** para a janela 22h–01h.
+- ~360 execuções/mês × ~3 min = **~1.080 min/mês**
+- Limite GitHub Hobby (repo privado): **2.000 min/mês** ✅ cabe folgado
+- Cooldown de 6h entre alertas com preço parecido (evita spam)
+
+Para mudar a frequência, edite a linha `cron:` no workflow:
+
+| Frequência | cron | Min/mês aprox |
+|------------|------|---------------|
+| 30 em 30 min | `*/30 * * * *` | ~4.320 (estoura grátis) |
+| 1 em 1 hora | `0 * * * *` | ~2.160 (estoura levinho) |
+| **2 em 2 horas (atual)** | `0 */2 * * *` | ~1.080 ✅ |
+| 4 em 4 horas | `0 */4 * * *` | ~540 |
+| 1x por dia | `0 12 * * *` | ~90 |
 
 ---
 
