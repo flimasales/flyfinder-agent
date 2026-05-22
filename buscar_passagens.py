@@ -485,6 +485,7 @@ def consultar_travelpayouts(leg: Leg, token: str,
         )
         return []
 
+    marker = (os.getenv("TRAVELPAYOUTS_MARKER") or "").strip()
     ofertas = []
     for it in data.get("data", []) or []:
         preco_num = float(it.get("price", 0)) or None
@@ -492,6 +493,22 @@ def consultar_travelpayouts(leg: Leg, token: str,
             continue
         cia = it.get("airline") or "—"
         gate = it.get("gate") or ""
+        link_rel = it.get("link") or ""
+        link_url = ""
+        if link_rel:
+            if "?" in link_rel:
+                link_url = f"https://www.aviasales.com{link_rel}"
+            else:
+                link_url = f"https://www.aviasales.com{link_rel}"
+            if marker:
+                sep = "&" if "?" in link_url else "?"
+                if "marker=" in link_url:
+                    import re as _re
+                    link_url = _re.sub(
+                        r"marker=[^&]*", f"marker={marker}", link_url
+                    )
+                else:
+                    link_url = f"{link_url}{sep}marker={marker}"
         ofertas.append({
             "cia":       cia,
             "saida":     (it.get("departure_at") or "")[11:16] or "—",
@@ -503,6 +520,7 @@ def consultar_travelpayouts(leg: Leg, token: str,
             "preco":     preco_num,
             "melhor":    False,
             "fonte":     _fonte_normalizada(gate),
+            "link":      link_url,
         })
     return ofertas
 
@@ -1467,10 +1485,15 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                     '<span class="badge best">Melhor</span>'
                     if o["melhor"] else ""
                 )
-                link_oferta = gerar_link_oferta(
+                fonte = o.get("fonte") or "Google Flights"
+                link_oferta = o.get("link") or gerar_link_oferta(
                     td["leg"], o, v.classe_label, v.pax,
                 )
-                fonte = o.get("fonte") or "Google Flights"
+                titulo_link = (
+                    f"Abrir a oferta no {fonte}"
+                    if o.get("link")
+                    else "Abrir esta oferta no Google Flights"
+                )
                 cls_fonte = (
                     "google" if "Google" in fonte
                     else "skyscanner" if "Skyscanner" in fonte
@@ -1482,7 +1505,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                 linhas.append(
                     f'<tr class="clickable" '
                     f'data-href="{href_oferta}" '
-                    f'title="Abrir esta oferta no Google Flights">'
+                    f'title="{e(titulo_link)}">'
                     f"<td>{e(o['cia'])}{badge}</td>"
                     f"<td>{e(str(o['saida']))}</td>"
                     f"<td>{e(str(o['chegada']))}</td>"
