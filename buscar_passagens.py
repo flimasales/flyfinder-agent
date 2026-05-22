@@ -17,15 +17,32 @@ Modos:
      busca one-way; o "total estimado" é a soma do melhor preço de
      cada trecho (passagens separadas).
 
+Aeroportos em ORIG/DEST aceitam:
+  - Código IATA único:               GRU, IBZ, CDG
+  - Código IATA de cidade (multi):   SAO=GRU+CGH+VCP, RIO=GIG+SDU,
+                                     PAR=CDG+ORY+BVA, LON=LHR+LGW+STN+…,
+                                     NYC=JFK+LGA+EWR, TYO=HND+NRT, etc.
+  - Lista separada por vírgula:      GRU,CGH,VCP / CDG,ORY
+
 Exemplos:
   # ida e volta (atalho)
   python buscar_passagens.py --origem GRU --destino GIG \\
+      --ida 15/06/2026 --volta 22/06/2026 --html
+
+  # ida e volta SP→Paris incluindo TODOS os aeroportos
+  python buscar_passagens.py --origem SAO --destino PAR \\
       --ida 15/06/2026 --volta 22/06/2026 --html
 
   # multi-trecho (open-jaw)
   python buscar_passagens.py \\
       --trecho GRU-IBZ:16/07/2026 \\
       --trecho CDG-GRU:01/08/2026 \\
+      --html
+
+  # multi-trecho com lista de aeroportos
+  python buscar_passagens.py \\
+      --trecho GRU,CGH,VCP-IBZ:16/07/2026 \\
+      --trecho CDG,ORY-GRU:01/08/2026 \\
       --html
 
   # interativo
@@ -69,6 +86,83 @@ CLASSES = {
     "primeira":  ("first",           "Primeira"),
 }
 
+# Códigos IATA de cidade (metroárea) → aeroportos atendidos.
+# Permite o usuário digitar só "SAO" e a busca cobrir GRU + CGH + VCP.
+# Adicione novos conforme precisar.
+CITY_TO_AIRPORTS: dict[str, list[str]] = {
+    # Brasil
+    "SAO": ["GRU", "CGH", "VCP"],          # São Paulo
+    "RIO": ["GIG", "SDU"],                  # Rio de Janeiro
+    "BHZ": ["CNF", "PLU"],                  # Belo Horizonte
+    # Europa
+    "PAR": ["CDG", "ORY", "BVA"],          # Paris
+    "LON": ["LHR", "LGW", "STN", "LCY", "LTN", "SEN"],  # Londres
+    "MIL": ["MXP", "LIN", "BGY"],          # Milão
+    "ROM": ["FCO", "CIA"],                  # Roma
+    "MOW": ["SVO", "DME", "VKO"],          # Moscou
+    "STO": ["ARN", "BMA", "NYO"],          # Estocolmo
+    "BUH": ["OTP", "BBU"],                  # Bucareste
+    # América do Norte
+    "NYC": ["JFK", "LGA", "EWR"],          # Nova York
+    "WAS": ["IAD", "DCA", "BWI"],          # Washington
+    "CHI": ["ORD", "MDW"],                  # Chicago
+    "YTO": ["YYZ", "YTZ"],                  # Toronto
+    # Ásia / Pacífico
+    "TYO": ["HND", "NRT"],                  # Tóquio
+    "OSA": ["KIX", "ITM"],                  # Osaka
+    "SEL": ["ICN", "GMP"],                  # Seul
+    "BJS": ["PEK", "PKX"],                  # Pequim
+    "SHA": ["PVG", "SHA"],                  # Xangai
+    "BKK": ["BKK", "DMK"],                  # Bangcoc
+    # Outros
+    "IST": ["IST", "SAW"],                  # Istambul
+    "BUE": ["EZE", "AEP"],                  # Buenos Aires
+}
+
+
+def _expandir_aeroportos(codigo: str) -> list[str]:
+    """Recebe um código (cidade, aeroporto ou lista) e devolve a lista
+    de aeroportos IATA a consultar.
+
+    Exemplos:
+      'SAO'         -> ['GRU', 'CGH', 'VCP']
+      'GRU'         -> ['GRU']
+      'GRU,CGH,VCP' -> ['GRU', 'CGH', 'VCP']
+      'gru, cgh'    -> ['GRU', 'CGH']
+    """
+    if not codigo:
+        return []
+    if "," in codigo:
+        return [
+            c.strip().upper()
+            for c in codigo.split(",")
+            if c.strip()
+        ]
+    c = codigo.strip().upper()
+    return CITY_TO_AIRPORTS.get(c, [c])
+
+
+def _label_aeroportos(codigo: str) -> str:
+    """Texto curto para exibição.
+
+    Exemplos:
+      'GRU'         -> 'GRU'
+      'SAO'         -> 'SAO (GRU/CGH/VCP)'
+      'GRU,CGH,VCP' -> 'GRU/CGH/VCP'
+    """
+    if not codigo:
+        return ""
+    if "," in codigo:
+        return "/".join(
+            p.strip().upper() for p in codigo.split(",") if p.strip()
+        )
+    c = codigo.strip().upper()
+    aeros = CITY_TO_AIRPORTS.get(c)
+    if aeros and len(aeros) > 1:
+        return f"{c} ({'/'.join(aeros)})"
+    return c
+
+
 COMPANHIAS = [
     {
         "nome": "Air France",
@@ -102,11 +196,37 @@ class Leg:
 
     @property
     def origem_iata(self) -> str:
-        return self.origem.upper()
+        """Código primário do trecho (cidade ou primeiro aeroporto).
+        Usado nos deep links — cidades IATA (SAO, PAR, LON…) são aceitas
+        nativamente pela maioria dos buscadores."""
+        return self.origem.upper().split(",")[0].strip()
 
     @property
     def destino_iata(self) -> str:
-        return self.destino.upper()
+        return self.destino.upper().split(",")[0].strip()
+
+    @property
+    def origens_lista(self) -> list[str]:
+        """Lista de aeroportos IATA a consultar (expande city codes
+        e separadores por vírgula)."""
+        return _expandir_aeroportos(self.origem)
+
+    @property
+    def destinos_lista(self) -> list[str]:
+        return _expandir_aeroportos(self.destino)
+
+    @property
+    def origem_label(self) -> str:
+        """Texto amigável para exibição (ex: 'SAO (GRU/CGH/VCP)')."""
+        return _label_aeroportos(self.origem)
+
+    @property
+    def destino_label(self) -> str:
+        return _label_aeroportos(self.destino)
+
+    @property
+    def multi_aeroportos(self) -> bool:
+        return len(self.origens_lista) > 1 or len(self.destinos_lista) > 1
 
     @property
     def data_iso(self) -> str:
@@ -168,28 +288,81 @@ def parse_data_br(s: str) -> datetime:
     )
 
 
+_TRECHO_FIND_RE = re.compile(
+    r"[A-Za-z]{3}(?:\s*,\s*[A-Za-z]{3})*"
+    r"\s*-\s*"
+    r"[A-Za-z]{3}(?:\s*,\s*[A-Za-z]{3})*"
+    r"\s*[:\s]\s*"
+    r"\d{1,4}[-/]\d{1,2}[-/]\d{1,4}"
+)
+
+
+def split_trechos(raw: str) -> list[str]:
+    """Quebra uma string em trechos individuais.
+
+    Aceita separadores `;`, `|` ou quebra de linha (recomendados para
+    quem usa listas com vírgula). Se nenhum desses separadores estiver
+    presente, usa regex para extrair os trechos — assim funciona tanto
+    com o formato legado (`A-B:DATA,C-D:DATA`) quanto com listas
+    (`A,B-C:DATA,D-E:DATA`)."""
+    if not raw:
+        return []
+    for sep in (";", "|", "\n"):
+        if sep in raw:
+            return [p.strip() for p in raw.split(sep) if p.strip()]
+    achados = [m.group(0) for m in _TRECHO_FIND_RE.finditer(raw)]
+    if achados:
+        return achados
+    # último fallback: split por vírgula (formato legado de 1 trecho)
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
 def parse_trecho(s: str) -> Leg:
-    """Formato: ORIG-DEST:DD/MM/AAAA  ex: GRU-IBZ:16/07/2026"""
+    """Formato: ORIG-DEST:DD/MM/AAAA  ex: GRU-IBZ:16/07/2026
+
+    ORIG e DEST podem ser:
+      - Código IATA de aeroporto único: GRU, IBZ
+      - Código IATA de cidade (multi-aeroporto): SAO, RIO, PAR, LON,
+        NYC, MIL, ROM, TYO, NYC, etc. — expande automaticamente
+        para todos os aeroportos da metrópole.
+      - Lista de aeroportos separados por vírgula: GRU,CGH,VCP
+
+    Exemplos válidos:
+      GRU-IBZ:16/07/2026
+      SAO-PAR:16/07/2026          (= GRU/CGH/VCP → CDG/ORY/BVA)
+      GRU,CGH-IBZ:16/07/2026      (sem VCP, só GRU e CGH)
+    """
     s = s.strip()
+    iata = r"[A-Za-z]{3}(?:\s*,\s*[A-Za-z]{3})*"
     m = re.match(
-        r"^\s*([A-Za-z]{3})\s*-\s*([A-Za-z]{3})\s*[:\s]\s*(.+?)\s*$", s
+        rf"^\s*({iata})\s*-\s*({iata})\s*[:\s]\s*(.+?)\s*$", s
     )
     if not m:
         raise argparse.ArgumentTypeError(
             f"Trecho inválido: {s!r}. "
-            f"Use o formato ORIG-DEST:DD/MM/AAAA (ex: GRU-IBZ:16/07/2026)."
+            f"Use ORIG-DEST:DD/MM/AAAA (ex: GRU-IBZ:16/07/2026, "
+            f"SAO-PAR:16/07/2026 ou GRU,CGH,VCP-IBZ:16/07/2026)."
         )
     orig, dest, data_str = m.groups()
-    return Leg(orig.upper(), dest.upper(), parse_data_br(data_str))
+    orig_clean = ",".join(p.strip().upper() for p in orig.split(","))
+    dest_clean = ",".join(p.strip().upper() for p in dest.split(","))
+    return Leg(orig_clean, dest_clean, parse_data_br(data_str))
 
 
 def gerar_link_oferta(leg: Leg, oferta: dict, classe_label: str,
                       pax: int = 1) -> str:
     """Gera URL do Google Flights para uma oferta específica de um trecho.
-    Inclui a companhia para refinar a busca."""
+    Inclui a companhia para refinar a busca. Quando a oferta tem
+    `rota_aero` (par de aeroportos específico em legs multi-aeroporto),
+    a busca é feita por esse par e não pelo código de cidade."""
     cia = (oferta.get("cia") or "").strip()
+    rota = (oferta.get("rota_aero") or "").strip()
+    if rota and "→" in rota:
+        orig, dest = [p.strip() for p in rota.split("→", 1)]
+    else:
+        orig, dest = leg.origem_iata, leg.destino_iata
     base = (
-        f"Voo só ida de {leg.origem_iata} para {leg.destino_iata} "
+        f"Voo só ida de {orig} para {dest} "
         f"em {leg.data_iso} {pax} passageiros classe {classe_label}"
     )
     if cia and cia != "—":
@@ -454,12 +627,106 @@ def _tp_redirect(marker: str, partner_id: int, url_final: str) -> str:
     )
 
 
+_KAYAK_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/121.0.0.0 Safari/537.36"
+)
+
+# Detecta blocos JSON do tipo {"price": 1234, ...} ou "price":"R$ 1.234"
+# que o Kayak embute no HTML inicial.
+_KAYAK_RE_PRECO = re.compile(
+    r'"(?:price|displayPrice|totalPrice)"\s*:\s*"?'
+    r'(?:R\$\s*)?([\d.,]+)"?',
+    re.IGNORECASE,
+)
+_KAYAK_RE_CIA = re.compile(
+    r'"(?:airline(?:Name)?|carrierName)"\s*:\s*"([^"]{2,40})"',
+    re.IGNORECASE,
+)
+_KAYAK_RE_STOPS = re.compile(
+    r'"(?:stops|numStops|stopCount)"\s*:\s*(\d+)',
+    re.IGNORECASE,
+)
+
+
+def _scrape_kayak(leg: Leg, pax: int, classe_codigo: str
+                  ) -> Optional[dict]:
+    """Tenta extrair preço/cia do HTML do Kayak. Best-effort: pode
+    falhar por bot-detection (Cloudflare/captcha). Retorna None nesse
+    caso — o chamador usa fallback de link."""
+    cabin = {
+        "economy": "economy", "premium-economy": "premium",
+        "business": "business", "first": "first",
+    }.get(classe_codigo, "economy")
+    url = (
+        f"https://www.kayak.com.br/flights/"
+        f"{leg.origem_iata}-{leg.destino_iata}/"
+        f"{leg.data_iso}/{pax}adults/{cabin}"
+    )
+    req = urllib.request.Request(url, headers={
+        "User-Agent": _KAYAK_UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.7",
+        "Accept-Encoding": "identity",
+        "Referer": "https://www.kayak.com.br/",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=6) as r:
+            corpo = r.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        print(f"[kayak-scrape] HTTP falhou: {e}", file=sys.stderr)
+        return None
+
+    if any(s in corpo.lower() for s in (
+        "captcha", "are you a robot", "access denied", "cf-challenge",
+    )):
+        print("[kayak-scrape] bloqueado (captcha/cloudflare) — usando "
+              "link de busca como fallback", file=sys.stderr)
+        return None
+
+    m_preco = _KAYAK_RE_PRECO.search(corpo)
+    if not m_preco:
+        print("[kayak-scrape] sem preço no HTML inicial — "
+              "Kayak renderiza via JS; usando link", file=sys.stderr)
+        return None
+
+    preco_num = _preco_para_float(m_preco.group(1))
+    if preco_num is None or preco_num <= 0:
+        return None
+
+    m_cia = _KAYAK_RE_CIA.search(corpo)
+    m_stops = _KAYAK_RE_STOPS.search(corpo)
+    cia = m_cia.group(1) if m_cia else "Diversas"
+    stops = int(m_stops.group(1)) if m_stops else "—"
+    return {
+        "cia": cia,
+        "preco_num": preco_num,
+        "preco_str": formatar_brl(preco_num),
+        "escalas": stops,
+    }
+
+
 def ofertas_agregadores(leg: Leg, marker: str,
                         classe_codigo: str = "economy",
-                        pax: int = 1) -> list:
-    """Cria linhas de busca em agregadores (Skyscanner / Kayak / Trip.com /
-    Decolar) com link de afiliado quando possível. Sem preço fixo (mostra
-    'Ver preço →') — clique abre o site filtrado pra rota+data."""
+                        pax: int = 1,
+                        tentar_kayak_scrape: Optional[bool] = None) -> list:
+    """Cria linhas de busca em agregadores (Skyscanner / Kayak / Trip.com).
+    - Pro Kayak: tenta scraping HTTP simples se ``tentar_kayak_scrape`` for
+      verdadeiro (ou se a env ``KAYAK_SCRAPE=1`` estiver setada). Atenção:
+      Kayak renderiza preço via JS e protege com Cloudflare, então o
+      scrape geralmente devolve nada em IP de servidor. Por isso o
+      padrão é DESLIGADO — devolve linha placeholder com link de busca.
+    - Pra Skyscanner / Trip.com: o preço real vem da API Travelpayouts
+      (ver `consultar_travelpayouts`). Aqui devolvemos só a linha
+      placeholder, que é REMOVIDA depois se a API trouxer oferta real
+      da mesma fonte.
+    """
+    if tentar_kayak_scrape is None:
+        tentar_kayak_scrape = (
+            os.getenv("KAYAK_SCRAPE", "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
     data = leg.data_iso
     yymmdd = f"{data[2:4]}{data[5:7]}{data[8:10]}"
     cabin_sky = {
@@ -499,17 +766,35 @@ def ofertas_agregadores(leg: Leg, marker: str,
     else:
         kayak_link = kayak_url
 
-    def _mk(cia, fonte, link):
+    def _mk(cia, fonte, link, preco_num=None, preco_str="Ver preço →",
+            escalas="—"):
         return {
             "cia": cia, "saida": "—", "chegada": "—",
-            "duracao": "—", "escalas": "—",
-            "preco_str": "Ver preço →", "preco": None,
+            "duracao": "—", "escalas": escalas,
+            "preco_str": preco_str, "preco": preco_num,
             "melhor": False, "fonte": fonte, "link": link,
+            "destaque_agregador": True,
         }
+
+    kayak_row = _mk("Buscar ofertas", "Kayak", kayak_link)
+    if tentar_kayak_scrape:
+        info = _scrape_kayak(leg, pax, classe_codigo)
+        if info:
+            print(
+                f"[kayak-scrape] OK — {info['cia']} "
+                f"a partir de {info['preco_str']}",
+                file=sys.stderr,
+            )
+            kayak_row = _mk(
+                info["cia"], "Kayak", kayak_link,
+                preco_num=info["preco_num"],
+                preco_str=info["preco_str"],
+                escalas=info["escalas"],
+            )
 
     return [
         _mk("Buscar ofertas",  "Skyscanner", sky_link),
-        _mk("Buscar ofertas",  "Kayak",      kayak_link),
+        kayak_row,
         _mk("Buscar ofertas",  "Trip.com",   trip_link),
     ]
 
@@ -590,6 +875,7 @@ def consultar_travelpayouts(leg: Leg, token: str,
                     )
                 else:
                     link_url = f"{link_url}{sep}marker={marker}"
+        fonte_norm = _fonte_normalizada(gate)
         ofertas.append({
             "cia":       cia,
             "saida":     (it.get("departure_at") or "")[11:16] or "—",
@@ -600,16 +886,50 @@ def consultar_travelpayouts(leg: Leg, token: str,
             "preco_str": formatar_brl(preco_num),
             "preco":     preco_num,
             "melhor":    False,
-            "fonte":     _fonte_normalizada(gate),
+            "fonte":     fonte_norm,
             "link":      link_url,
+            "destaque_agregador": fonte_norm in (
+                "Skyscanner", "Trip.com", "Kayak",
+            ),
+            "origem_real":  it.get("origin_airport")
+                            or it.get("origin") or "",
+            "destino_real": it.get("destination_airport")
+                            or it.get("destination") or "",
         })
     return ofertas
 
 
+def _combos_aeroportos(leg: Leg) -> list[tuple[str, str]]:
+    """Combinações origem×destino a consultar para uma leg.
+    Sempre filtra pares com origem == destino (caso raro de city code
+    que compartilha código com aeroporto, ex: SHA)."""
+    combos = [
+        (o, d)
+        for o in leg.origens_lista
+        for d in leg.destinos_lista
+        if o != d
+    ]
+    return combos or [(leg.origem_iata, leg.destino_iata)]
+
+
+def _sig_oferta(o: dict) -> tuple:
+    """Assinatura única de uma oferta (pra dedup entre combos)."""
+    return (
+        o.get("cia") or "",
+        str(o.get("saida") or ""),
+        str(o.get("chegada") or ""),
+        o.get("preco") if o.get("preco") is not None else o.get("preco_str"),
+        o.get("fonte") or "",
+    )
+
+
 def consultar_google_flights(v: Viagem) -> Optional[dict]:
     """Consulta o Google Flights via fast-flights, um trecho por vez
-    (busca one-way para cada leg). Retorna dict com lista por trecho
-    ou None se o pacote não estiver instalado."""
+    (busca one-way para cada leg). Para legs com múltiplos aeroportos
+    (códigos de cidade como SAO/PAR ou listas como GRU,CGH,VCP), itera
+    por todas as combinações e mescla as ofertas (dedup por assinatura).
+    Retorna dict com lista por trecho ou None se o pacote não estiver
+    instalado."""
     try:
         from fast_flights import FlightData, Passengers, get_flights
     except ImportError:
@@ -620,84 +940,152 @@ def consultar_google_flights(v: Viagem) -> Optional[dict]:
         )
         return None
 
+    marker_env = (os.getenv("TRAVELPAYOUTS_MARKER") or "").strip()
+    tp_token = (os.getenv("TRAVELPAYOUTS_TOKEN") or "").strip()
+
     trechos = []
     for i, leg in enumerate(v.legs, 1):
-        print(
-            f"[buscando] trecho {i}/{len(v.legs)}: "
-            f"{leg.origem_iata} → {leg.destino_iata} em {leg.data_br}...",
-            file=sys.stderr,
-        )
-        try:
-            result = get_flights(
-                flight_data=[
-                    FlightData(
-                        date=leg.data_iso,
-                        from_airport=leg.origem_iata,
-                        to_airport=leg.destino_iata,
-                    ),
-                ],
-                trip="one-way",
-                seat=v.classe_codigo,
-                passengers=Passengers(adults=v.pax),
-                fetch_mode="fallback",
-            )
-        except Exception as e:
-            print(f"[erro fast-flights trecho {i}] {e}", file=sys.stderr)
-            trechos.append({
-                "leg": leg, "ofertas": [], "current_price": None,
-                "erro": str(e),
-            })
-            continue
+        combos = _combos_aeroportos(leg)
+        n_combos = len(combos)
 
-        ofertas = []
-        for f in getattr(result, "flights", []) or []:
-            preco_raw = getattr(f, "price", None)
-            preco_num = _preco_para_float(preco_raw)
-            preco_brl, preco_str = normalizar_para_brl(
-                preco_num, str(preco_raw) if preco_raw else "—"
-            )
-            ofertas.append({
-                "cia":       getattr(f, "name", "—") or "—",
-                "saida":     getattr(f, "departure", "—"),
-                "chegada":   getattr(f, "arrival", "—"),
-                "duracao":   getattr(f, "duration", "—"),
-                "escalas":   getattr(f, "stops", 0),
-                "preco_str": preco_str,
-                "preco":     preco_brl,
-                "melhor":    bool(getattr(f, "is_best", False)),
-                "fonte":     "Google Flights",
-            })
-
-        marker_env = (os.getenv("TRAVELPAYOUTS_MARKER") or "").strip()
-        ofertas.extend(
-            ofertas_agregadores(leg, marker_env, v.classe_codigo, v.pax)
-        )
-
-        tp_token = (os.getenv("TRAVELPAYOUTS_TOKEN") or "").strip()
-        if tp_token:
+        if leg.multi_aeroportos:
             print(
-                f"[travelpayouts] consultando token=***{tp_token[-4:]} "
-                f"trecho={leg.origem_iata}->{leg.destino_iata} "
-                f"data={leg.data_iso}...",
+                f"[buscando] trecho {i}/{len(v.legs)}: "
+                f"{leg.origem_label} → {leg.destino_label} "
+                f"({n_combos} combinações) em {leg.data_br}...",
                 file=sys.stderr,
             )
-            tp_ofertas = consultar_travelpayouts(
-                leg, tp_token, classe=v.classe_codigo,
+        else:
+            print(
+                f"[buscando] trecho {i}/{len(v.legs)}: "
+                f"{leg.origem_iata} → {leg.destino_iata} em {leg.data_br}...",
+                file=sys.stderr,
             )
-            if tp_ofertas:
-                fontes = sorted({o['fonte'] for o in tp_ofertas})
+
+        ofertas: list[dict] = []
+        seen: set = set()
+        current_price = None
+        last_error: Optional[str] = None
+
+        for j, (orig, dest) in enumerate(combos, 1):
+            if n_combos > 1:
                 print(
-                    f"[travelpayouts] +{len(tp_ofertas)} ofertas "
-                    f"({', '.join(fontes)})",
+                    f"  [combo {j}/{n_combos}] {orig} → {dest}...",
                     file=sys.stderr,
                 )
-            else:
+            try:
+                result = get_flights(
+                    flight_data=[
+                        FlightData(
+                            date=leg.data_iso,
+                            from_airport=orig,
+                            to_airport=dest,
+                        ),
+                    ],
+                    trip="one-way",
+                    seat=v.classe_codigo,
+                    passengers=Passengers(adults=v.pax),
+                    fetch_mode="fallback",
+                )
+            except Exception as e:
+                last_error = str(e)
                 print(
-                    "[travelpayouts] 0 ofertas retornadas "
-                    "(token inválido, rota sem dados, ou data muito próxima)",
+                    f"  [erro fast-flights {orig}→{dest}] {e}",
                     file=sys.stderr,
                 )
-            ofertas.extend(tp_ofertas)
+                continue
+
+            if current_price is None:
+                current_price = getattr(result, "current_price", None)
+
+            for f in getattr(result, "flights", []) or []:
+                preco_raw = getattr(f, "price", None)
+                preco_num = _preco_para_float(preco_raw)
+                preco_brl, preco_str = normalizar_para_brl(
+                    preco_num,
+                    str(preco_raw) if preco_raw else "—",
+                )
+                rota_aero = (
+                    f"{orig}→{dest}" if leg.multi_aeroportos else ""
+                )
+                oferta = {
+                    "cia":       getattr(f, "name", "—") or "—",
+                    "saida":     getattr(f, "departure", "—"),
+                    "chegada":   getattr(f, "arrival", "—"),
+                    "duracao":   getattr(f, "duration", "—"),
+                    "escalas":   getattr(f, "stops", 0),
+                    "preco_str": preco_str,
+                    "preco":     preco_brl,
+                    "melhor":    bool(getattr(f, "is_best", False)),
+                    "fonte":     "Google Flights",
+                    "rota_aero": rota_aero,
+                }
+                sig = _sig_oferta(oferta)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                ofertas.append(oferta)
+
+        # Agregadores (Skyscanner/Kayak/Trip.com) — gerados uma vez por
+        # leg usando o código primário (city code ou primeiro aeroporto).
+        # Os buscadores aceitam city codes nativamente.
+        rep_leg = Leg(leg.origem_iata, leg.destino_iata, leg.data)
+        ofertas_agg = ofertas_agregadores(
+            rep_leg, marker_env, v.classe_codigo, v.pax,
+        )
+
+        tp_ofertas: list = []
+        if tp_token:
+            # Travelpayouts/Aviasales aceita city codes nativamente.
+            # Se a entrada NÃO tem vírgula, mandamos o código tal qual
+            # (SAO retorna voos de GRU+CGH+VCP em 1 chamada). Se tem
+            # vírgula (ex: GRU,CGH), iteramos os combos.
+            usa_combos = ("," in leg.origem) or ("," in leg.destino)
+            tp_combos = combos if usa_combos else [
+                (leg.origem_iata, leg.destino_iata)
+            ]
+            for (orig_tp, dest_tp) in tp_combos:
+                print(
+                    f"[travelpayouts] token=***{tp_token[-4:]} "
+                    f"{orig_tp}->{dest_tp} {leg.data_iso}...",
+                    file=sys.stderr,
+                )
+                sub_leg = Leg(orig_tp, dest_tp, leg.data)
+                resultado_tp = consultar_travelpayouts(
+                    sub_leg, tp_token, classe=v.classe_codigo,
+                )
+                if resultado_tp:
+                    from collections import Counter
+                    cont = Counter(o['fonte'] for o in resultado_tp)
+                    resumo = ", ".join(
+                        f"{f}={n}" for f, n in cont.most_common()
+                    )
+                    print(
+                        f"[travelpayouts] +{len(resultado_tp)} ofertas "
+                        f"({resumo})",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "[travelpayouts] 0 ofertas retornadas "
+                        "(token, rota sem dados ou data muito próxima)",
+                        file=sys.stderr,
+                    )
+                for o in resultado_tp:
+                    if leg.multi_aeroportos:
+                        # Quando temos os aeroportos reais da resposta,
+                        # usamos eles. Caso contrário caímos no par
+                        # consultado (orig_tp→dest_tp).
+                        o_real = o.get("origem_real") or orig_tp
+                        d_real = o.get("destino_real") or dest_tp
+                        o["rota_aero"] = f"{o_real}→{d_real}"
+                    else:
+                        o["rota_aero"] = ""
+                    sig = _sig_oferta(o)
+                    if sig in seen:
+                        continue
+                    seen.add(sig)
+                    tp_ofertas.append(o)
         else:
             print(
                 "[travelpayouts] SEM token — defina TRAVELPAYOUTS_TOKEN "
@@ -705,11 +1093,26 @@ def consultar_google_flights(v: Viagem) -> Optional[dict]:
                 file=sys.stderr,
             )
 
+        # Dedup: se o TP retornou ofertas REAIS pra Skyscanner ou Trip.com,
+        # remove a respectiva linha placeholder do agregador (evita duplicar
+        # "Buscar ofertas — Skyscanner" junto da oferta real).
+        fontes_reais_tp = {
+            o["fonte"] for o in tp_ofertas
+            if o.get("preco") is not None
+        }
+        ofertas_agg = [
+            o for o in ofertas_agg
+            if not (o["fonte"] in fontes_reais_tp and o.get("preco") is None)
+        ]
+
+        ofertas.extend(ofertas_agg)
+        ofertas.extend(tp_ofertas)
+
         trechos.append({
             "leg": leg,
             "ofertas": ofertas,
-            "current_price": getattr(result, "current_price", None),
-            "erro": None,
+            "current_price": current_price,
+            "erro": last_error if not ofertas else None,
         })
 
     return {"trechos": trechos}
@@ -1174,7 +1577,7 @@ def render_markdown(v: Viagem, links: list, dados: Optional[dict]) -> str:
     out.append("|---|--------|---------|------|")
     for i, L in enumerate(v.legs, 1):
         out.append(
-            f"| {i} | {L.origem_iata} | {L.destino_iata} | {L.data_br} |"
+            f"| {i} | {L.origem_label} | {L.destino_label} | {L.data_br} |"
         )
     out.append("")
 
@@ -1202,14 +1605,18 @@ def render_markdown(v: Viagem, links: list, dados: Optional[dict]) -> str:
         for i, (td, m) in enumerate(zip(trechos_dados, melhores), 1):
             L = td["leg"]
             if m:
+                rota_extra = (
+                    f" via {m.get('rota_aero')}"
+                    if L.multi_aeroportos and m.get("rota_aero") else ""
+                )
                 out.append(
-                    f"- **Trecho {i}** ({L.origem_iata} → {L.destino_iata}, "
+                    f"- **Trecho {i}** ({L.origem_label} → {L.destino_label}, "
                     f"{L.data_br}): melhor {m['preco_str']} — {m['cia']} "
-                    f"({m['duracao']})"
+                    f"({m['duracao']}){rota_extra}"
                 )
             else:
                 out.append(
-                    f"- **Trecho {i}** ({L.origem_iata} → {L.destino_iata}, "
+                    f"- **Trecho {i}** ({L.origem_label} → {L.destino_label}, "
                     f"{L.data_br}): _sem ofertas retornadas_"
                 )
         if total_ok:
@@ -1222,7 +1629,7 @@ def render_markdown(v: Viagem, links: list, dados: Optional[dict]) -> str:
         for i, td in enumerate(trechos_dados, 1):
             L = td["leg"]
             out.append(
-                f"## Trecho {i}: {L.origem_iata} → {L.destino_iata} "
+                f"## Trecho {i}: {L.origem_label} → {L.destino_label} "
                 f"({L.data_br})\n"
             )
             if td.get("erro"):
@@ -1243,22 +1650,40 @@ def render_markdown(v: Viagem, links: list, dados: Optional[dict]) -> str:
                 o for o in td["ofertas"] if o.get("preco") is None
             ]
             por_preco = com_preco[:12] + sem_preco
-            out.append(
+            mostrar_rota = L.multi_aeroportos
+            cabecalho = (
                 "| # | Companhia | Saída | Chegada | Duração | Escalas | "
-                "Preço | Fonte | Reservar |"
+                "Preço | Fonte |"
             )
-            out.append(
+            sep = (
                 "|---|-----------|-------|---------|---------|---------|"
-                "-------|-------|----------|"
+                "-------|-------|"
             )
+            if mostrar_rota:
+                cabecalho = (
+                    "| # | Rota | Companhia | Saída | Chegada | Duração | "
+                    "Escalas | Preço | Fonte |"
+                )
+                sep = (
+                    "|---|------|-----------|-------|---------|---------|"
+                    "---------|-------|-------|"
+                )
+            cabecalho += " Reservar |"
+            sep += "----------|"
+            out.append(cabecalho)
+            out.append(sep)
             for j, o in enumerate(por_preco, 1):
                 marca = " ⭐" if o["melhor"] else ""
                 link = gerar_link_oferta(
                     td["leg"], o, v.classe_label, v.pax,
                 )
                 fonte = o.get("fonte") or "Google Flights"
+                rota_col = ""
+                if mostrar_rota:
+                    rota = (o.get("rota_aero") or "").strip() or "—"
+                    rota_col = f" {rota} |"
                 out.append(
-                    f"| {j} | {o['cia']}{marca} | {o['saida']} | "
+                    f"| {j} |{rota_col} {o['cia']}{marca} | {o['saida']} | "
                     f"{o['chegada']} | {o['duracao']} | {o['escalas']} | "
                     f"{o['preco_str']} | {fonte} | [Buscar]({link}) |"
                 )
@@ -1380,14 +1805,23 @@ _HTML_TEMPLATE = """<!doctype html>
     font-size: 11px; font-weight: 600; white-space: nowrap; }}
   .fonte-google     {{ background: rgba(56,189,248,.15); color: #38bdf8; }}
   .fonte-skyscanner {{ background: rgba(168,85,247,.15); color: #a855f7; }}
+  .fonte-kayak      {{ background: rgba(255,90,90,.15);  color: #ff6b6b; }}
   .fonte-kiwi       {{ background: rgba(244,114,182,.15); color: #f472b6; }}
   .fonte-trip       {{ background: rgba(251,146,60,.15); color: #fb923c; }}
   .fonte-outras     {{ background: rgba(148,163,184,.15); color: #94a3b8; }}
+  tr.agregador-row td {{
+    background: rgba(56,189,248,.04);
+    border-left: 3px solid var(--accent);
+  }}
+  tr.agregador-row td:first-child {{ padding-left: 9px; }}
+  tr.agregador-placeholder td.price {{ color: var(--muted); font-weight: 500; }}
+  tr.agregador-placeholder td {{ opacity: .85; }}
   .badge {{
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 600; margin-left: 6px;
   }}
   .badge.best {{ background: rgba(52,211,153,.15); color: var(--good); }}
+  .badge.agg  {{ background: rgba(56,189,248,.18); color: var(--accent); }}
   .price {{ font-weight: 700; color: var(--good); white-space: nowrap; }}
   .links {{ display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }}
@@ -1528,7 +1962,8 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
     trechos_cards = "".join(
         f'<div class="leg-card">'
         f'<span class="leg-num">{i}</span>'
-        f'<span class="leg-route">{e(L.origem_iata)} → {e(L.destino_iata)}</span>'
+        f'<span class="leg-route">'
+        f'{e(L.origem_label)} → {e(L.destino_label)}</span>'
         f'<span class="leg-date">{e(L.data_br)}</span>'
         f'</div>'
         for i, L in enumerate(v.legs, 1)
@@ -1555,6 +1990,12 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                     total += m["preco"]
                 else:
                     total_ok = False
+                rota_extra = ""
+                if L.multi_aeroportos and m.get("rota_aero"):
+                    rota_extra = (
+                        f'<div class="label" style="margin-top:2px">'
+                        f'via {e(m["rota_aero"])}</div>'
+                    )
                 cards.append(
                     f'<div class="card">'
                     f'<div class="label">Trecho {i} — '
@@ -1562,6 +2003,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                     f'<div class="value">{e(str(m["preco_str"]))}</div>'
                     f'<div class="label" style="margin-top:4px">'
                     f'{e(m["cia"])} • {e(str(m["duracao"]))}</div>'
+                    f'{rota_extra}'
                     f'</div>'
                 )
             else:
@@ -1594,7 +2036,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
         for i, td in enumerate(trechos_dados, 1):
             L = td["leg"]
             titulo = (
-                f"Trecho {i}: {e(L.origem_iata)} → {e(L.destino_iata)} "
+                f"Trecho {i}: {e(L.origem_label)} → {e(L.destino_label)} "
                 f"<small style='color:var(--muted);font-weight:400;font-size:13px'>"
                 f"({e(L.data_br)})</small>"
             )
@@ -1611,21 +2053,63 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                 )
                 continue
 
-            com_preco = sorted(
-                [o for o in td["ofertas"] if o.get("preco") is not None],
+            FONTES_DESTAQUE = ("Skyscanner", "Kayak", "Trip.com")
+            destaque_por_fonte: dict[str, dict] = {}
+            for o in td["ofertas"]:
+                f = o.get("fonte") or ""
+                if f not in FONTES_DESTAQUE:
+                    continue
+                cur = destaque_por_fonte.get(f)
+                if cur is None:
+                    destaque_por_fonte[f] = o
+                    continue
+                cur_preco = cur.get("preco")
+                novo_preco = o.get("preco")
+                if cur_preco is None and novo_preco is not None:
+                    destaque_por_fonte[f] = o
+                elif (cur_preco is not None and novo_preco is not None
+                      and novo_preco < cur_preco):
+                    destaque_por_fonte[f] = o
+
+            destaque_rows = list(destaque_por_fonte.values())
+            destaque_rows.sort(
+                key=lambda o: (
+                    0 if o.get("preco") is not None else 1,
+                    o.get("preco") if o.get("preco") is not None else 0,
+                    FONTES_DESTAQUE.index(o["fonte"]),
+                )
+            )
+            ids_destaque = {id(o) for o in destaque_rows}
+
+            com_preco_outros = sorted(
+                [o for o in td["ofertas"]
+                 if o.get("preco") is not None
+                 and id(o) not in ids_destaque],
                 key=lambda o: o["preco"],
             )
-            sem_preco = [
-                o for o in td["ofertas"] if o.get("preco") is None
+            sem_preco_outros = [
+                o for o in td["ofertas"]
+                if o.get("preco") is None
+                and id(o) not in ids_destaque
             ]
-            por_preco = com_preco[:12] + sem_preco
+            por_preco = (
+                destaque_rows + com_preco_outros[:10] + sem_preco_outros
+            )
+            mostrar_rota = L.multi_aeroportos
             linhas = []
             for o in por_preco:
-                badge = (
-                    '<span class="badge best">Melhor</span>'
-                    if o["melhor"] else ""
-                )
+                badges = []
+                if o.get("melhor"):
+                    badges.append(
+                        '<span class="badge best">Melhor</span>'
+                    )
                 fonte = o.get("fonte") or "Google Flights"
+                is_destaque = fonte in FONTES_DESTAQUE
+                tem_preco = o.get("preco") is not None
+                if is_destaque and tem_preco:
+                    badges.append(
+                        f'<span class="badge agg">{e(fonte)}</span>'
+                    )
                 link_oferta = o.get("link") or gerar_link_oferta(
                     td["leg"], o, v.classe_label, v.pax,
                 )
@@ -1637,16 +2121,32 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                 cls_fonte = (
                     "google" if "Google" in fonte
                     else "skyscanner" if "Skyscanner" in fonte
+                    else "kayak" if "Kayak" in fonte
                     else "kiwi" if "Kiwi" in fonte
                     else "trip" if "Trip" in fonte
                     else "outras"
                 )
+                tr_class = "clickable"
+                if is_destaque:
+                    tr_class += " agregador-row"
+                if is_destaque and not tem_preco:
+                    tr_class += " agregador-placeholder"
                 href_oferta = e(link_oferta)
+                badges_html = "".join(badges)
+                rota_td = ""
+                if mostrar_rota:
+                    rota_val = (o.get("rota_aero") or "").strip() or "—"
+                    rota_td = (
+                        f'<td style="font-family:monospace;'
+                        f'color:var(--accent);font-size:13px">'
+                        f'{e(rota_val)}</td>'
+                    )
                 linhas.append(
-                    f'<tr class="clickable" '
+                    f'<tr class="{tr_class}" '
                     f'data-href="{href_oferta}" '
                     f'title="{e(titulo_link)}">'
-                    f"<td>{e(o['cia'])}{badge}</td>"
+                    f"{rota_td}"
+                    f"<td>{e(o['cia'])}{badges_html}</td>"
                     f"<td>{e(str(o['saida']))}</td>"
                     f"<td>{e(str(o['chegada']))}</td>"
                     f"<td>{e(str(o['duracao']))}</td>"
@@ -1658,6 +2158,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                     f"</tr>"
                 )
             nivel = td.get("current_price") or "—"
+            th_rota = "<th>Rota</th>" if mostrar_rota else ""
             secoes.append(
                 f"<h3>{titulo}</h3>"
                 f"<div class='label' style='color:var(--muted);"
@@ -1665,6 +2166,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
                 f"Nível de preço Google: <b style='color:var(--warn)'>"
                 f"{e(str(nivel))}</b></div>"
                 f"<table><thead><tr>"
+                f"{th_rota}"
                 f"<th>Companhia</th><th>Saída</th><th>Chegada</th>"
                 f"<th>Duração</th><th>Escalas</th><th>Preço</th>"
                 f"<th>Fonte</th>"
@@ -1778,12 +2280,27 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
 
 
 def viagem_from_env() -> Viagem:
-    """Monta a Viagem a partir de variáveis de ambiente (Vercel / Docker)."""
+    """Monta a Viagem a partir de variáveis de ambiente (Vercel / Docker).
+
+    VIAGEM_TRECHOS aceita um ou mais trechos no formato
+    ORIG-DEST:DD/MM/AAAA. ORIG/DEST podem ser código IATA, código de
+    cidade (SAO=GRU/CGH/VCP, PAR=CDG/ORY/BVA, LON…) ou lista de
+    aeroportos separados por vírgula (GRU,CGH,VCP).
+
+    Separadores entre trechos: `;`, `|` ou quebra de linha (recomendado
+    quando você usa listas de aeroportos com vírgula). Como fallback, a
+    vírgula entre trechos também funciona graças a um reconhecedor por
+    regex — ambos os formatos abaixo são válidos:
+
+      'SAO-PAR:16/07/2026;CDG-GRU:01/08/2026'                (recomendado)
+      'GRU-IBZ:16/07/2026,CDG-GRU:01/08/2026'                (formato legado)
+      'GRU,CGH,VCP-IBZ:16/07/2026;CDG,ORY-GRU:01/08/2026'    (com listas)
+    """
     raw = os.getenv(
         "VIAGEM_TRECHOS",
-        "GRU-IBZ:16/07/2026,CDG-GRU:01/08/2026",
+        "SAO-IBZ:16/07/2026;CDG-SAO:01/08/2026",
     )
-    legs = [parse_trecho(p.strip()) for p in raw.split(",") if p.strip()]
+    legs = [parse_trecho(p) for p in split_trechos(raw)]
     max_raw = os.getenv("VIAGEM_MAX_ESCALAS", "2").strip()
     max_escalas = int(max_raw) if max_raw.isdigit() else None
     return Viagem(
@@ -1885,6 +2402,12 @@ def servir_local(v: Viagem, porta: int = 8765,
 
 def coletar_interativo() -> Viagem:
     print("\n=== Pesquisa de Passagens ===\n")
+    print(
+        "Dica: para incluir vários aeroportos da mesma cidade você pode\n"
+        "  - usar o código IATA da cidade (SAO=GRU/CGH/VCP, RIO=GIG/SDU,\n"
+        "    PAR=CDG/ORY/BVA, LON=LHR/LGW/STN/LCY/LTN, NYC=JFK/LGA/EWR…)\n"
+        "  - ou listar os aeroportos separados por vírgula (GRU,CGH,VCP).\n"
+    )
     n = int(
         input("Quantos trechos? (1=só ida, 2=ida e volta, 3+ multi-cidade) "
               "[2]: ").strip() or "2"
@@ -1892,10 +2415,20 @@ def coletar_interativo() -> Viagem:
     legs = []
     for i in range(1, n + 1):
         print(f"\n-- Trecho {i} --")
-        orig = input("  Origem (IATA, ex: GRU): ").strip()
-        dest = input("  Destino (IATA, ex: IBZ): ").strip()
+        orig = input(
+            "  Origem (IATA / cidade / lista, ex: GRU, SAO, GRU,CGH): "
+        ).strip()
+        dest = input(
+            "  Destino (IATA / cidade / lista, ex: IBZ, PAR, CDG,ORY): "
+        ).strip()
         data = parse_data_br(input("  Data (DD/MM/AAAA): ").strip())
-        legs.append(Leg(orig, dest, data))
+        orig_clean = ",".join(
+            p.strip().upper() for p in orig.split(",") if p.strip()
+        ) or orig.upper()
+        dest_clean = ",".join(
+            p.strip().upper() for p in dest.split(",") if p.strip()
+        ) or dest.upper()
+        legs.append(Leg(orig_clean, dest_clean, data))
     pax = int(input("\nNº de passageiros adultos [1]: ").strip() or "1")
     classe = (
         input("Classe [economica/premium/executiva/primeira] "
@@ -1923,18 +2456,38 @@ def main() -> None:
             "  # ida e volta (atalho)\n"
             "  python buscar_passagens.py --origem GRU --destino GIG "
             "--ida 15/06/2026 --volta 22/06/2026 --html\n\n"
+            "  # ida e volta SP→Paris incluindo TODOS os aeroportos\n"
+            "  python buscar_passagens.py --origem SAO --destino PAR "
+            "--ida 15/06/2026 --volta 22/06/2026 --html\n\n"
             "  # multi-cidade (open-jaw)\n"
             "  python buscar_passagens.py "
             "--trecho GRU-IBZ:16/07/2026 "
-            "--trecho CDG-GRU:01/08/2026 --html\n"
+            "--trecho CDG-GRU:01/08/2026 --html\n\n"
+            "  # multi-cidade com lista de aeroportos\n"
+            "  python buscar_passagens.py "
+            "--trecho GRU,CGH,VCP-IBZ:16/07/2026 "
+            "--trecho CDG,ORY-GRU:01/08/2026 --html\n\n"
+            "Códigos de cidade reconhecidos: SAO, RIO, BHZ, PAR, LON, MIL,\n"
+            "  ROM, MOW, STO, BUH, NYC, WAS, CHI, YTO, TYO, OSA, SEL, BJS,\n"
+            "  SHA, BKK, IST, BUE — cada um expande para todos os aeroportos\n"
+            "  da metrópole automaticamente.\n"
         ),
     )
     p.add_argument(
         "--trecho", action="append", type=parse_trecho, metavar="ORIG-DEST:DATA",
-        help="Trecho da viagem (pode repetir). Ex: GRU-IBZ:16/07/2026",
+        help="Trecho da viagem (pode repetir). Ex: GRU-IBZ:16/07/2026, "
+             "SAO-PAR:16/07/2026 ou GRU,CGH,VCP-IBZ:16/07/2026",
     )
-    p.add_argument("--origem",  help="[atalho ida-volta] IATA origem")
-    p.add_argument("--destino", help="[atalho ida-volta] IATA destino")
+    p.add_argument(
+        "--origem",
+        help="[atalho] origem: IATA (GRU), cidade (SAO=GRU/CGH/VCP) "
+             "ou lista (GRU,CGH,VCP)",
+    )
+    p.add_argument(
+        "--destino",
+        help="[atalho] destino: IATA, cidade ou lista (mesma sintaxe "
+             "de --origem)",
+    )
     p.add_argument("--ida",   type=parse_data_br, help="[atalho] data ida")
     p.add_argument("--volta", type=parse_data_br, help="[atalho] data volta")
     p.add_argument("--pax", type=int, default=1, help="Passageiros (padrão 1)")
