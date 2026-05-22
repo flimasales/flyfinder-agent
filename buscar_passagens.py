@@ -1111,6 +1111,7 @@ _HTML_TEMPLATE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pesquisa de Passagens — {rota}</title>
+{travelpayouts_drive}
 <style>
   :root {{
     --bg: #0f172a; --panel: #1e293b; --panel2: #273449;
@@ -1297,6 +1298,27 @@ _HTML_TEMPLATE = """<!doctype html>
 </body>
 </html>
 """
+
+
+def _snippet_travelpayouts_drive() -> str:
+    """Retorna o <script> do Travelpayouts Drive (tracking de afiliado).
+    Ativa se TRAVELPAYOUTS_DRIVE_ID ou TRAVELPAYOUTS_DRIVE_URL existirem
+    no ambiente. Sem env var, retorna string vazia (sem tracker)."""
+    url = os.getenv("TRAVELPAYOUTS_DRIVE_URL", "").strip()
+    if not url:
+        drive_id = os.getenv("TRAVELPAYOUTS_DRIVE_ID", "").strip()
+        if not drive_id:
+            return ""
+        import base64
+        slug = base64.b64encode(drive_id.encode()).decode().rstrip("=")
+        url = f"https://emrldtp.cc/{slug}.js?t={drive_id}"
+    return (
+        '<script nowprocket data-noptimize="1" data-cfasync="false" '
+        'data-wpfc-render="false" seraph-accel-crit="1" data-no-defer="1">'
+        '(function(){var s=document.createElement("script");s.async=1;'
+        f's.src={json.dumps(url)};document.head.appendChild(s);}})();'
+        "</script>"
+    )
 
 
 def render_html(v: Viagem, links: list, dados: Optional[dict],
@@ -1545,6 +1567,7 @@ def render_html(v: Viagem, links: list, dados: Optional[dict],
         detalhes_html=detalhes_html,
         links_html=links_html,
         cias_html=cias_html,
+        travelpayouts_drive=_snippet_travelpayouts_drive(),
         gerado_em=datetime.now().strftime("%d/%m/%Y %H:%M"),
     )
 

@@ -76,6 +76,41 @@ O workflow já lê desse secret automaticamente.
 
 ---
 
+## Drive — tracker de afiliado (ganhar comissão)
+
+O **Drive** é um script de tracking diferente do API token: ele registra cliques nos links da sua página pra você **ganhar comissão** quando alguém comprar via Travelpayouts.
+
+### Como ativar
+
+1. No painel Travelpayouts, vá em **Drive** (menu lateral) e copie o ID numérico do snippet (no exemplo `src='https://emrldtp.cc/NTMxODg2.js?t=531886'`, o ID é **531886**)
+2. Configure como env var em **um** dos seguintes lugares:
+
+| Onde | Nome | Valor |
+|------|------|-------|
+| Vercel | `TRAVELPAYOUTS_DRIVE_ID` | `531886` |
+| GitHub Actions secret | `TRAVELPAYOUTS_DRIVE_ID` | `531886` |
+| Local PowerShell | `$env:TRAVELPAYOUTS_DRIVE_ID="531886"` | — |
+
+3. Redeploy / próximo run e o script é injetado automaticamente no `<head>` de toda página gerada.
+
+### Como verificar se está funcionando
+
+- Abra a página (Vercel ou local), View Source (`Ctrl+U`), procure por `emrldtp.cc` — deve aparecer no `<head>`.
+- Volte no painel Travelpayouts → Drive → **Verify installation** — vai detectar.
+
+### Para ganhar comissão de verdade
+
+O script só rastreia cliques. Pra **converter em comissão**, os links que aparecem na página precisam ser de afiliado (com seu **marker**), não diretos.
+
+Hoje os links da nossa página são diretos para Google Flights / Skyscanner / Kayak / etc. Pra trocar pra links de afiliado:
+
+- Use a **WhiteLabel** ou os **shortlinks tp.media** do Travelpayouts
+- Ou parametrize os deep links com `marker=SEU_MARKER`
+
+Posso fazer isso depois, é só pedir. Por enquanto o Drive já fica instalado pra rastrear visitas e cliques.
+
+---
+
 ## Alternativas (se preferir não cadastrar)
 
 - Manter como está: só Google Flights na tabela.

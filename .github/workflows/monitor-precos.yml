@@ -62,6 +62,7 @@ jobs:
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
           TRAVELPAYOUTS_TOKEN: ${{ secrets.TRAVELPAYOUTS_TOKEN }}
+          TRAVELPAYOUTS_DRIVE_ID: ${{ secrets.TRAVELPAYOUTS_DRIVE_ID }}
           WORKFLOW_URL: "https://github.com/${{ github.repository }}/actions/workflows/monitor-precos.yml"
           TZ: America/Sao_Paulo
         run: |
