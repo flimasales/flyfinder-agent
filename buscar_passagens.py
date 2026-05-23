@@ -1277,6 +1277,12 @@ def formatar_numero_br(num: str) -> str:
     return s
 
 
+def deve_enviar_whatsapp(v: Viagem, args) -> bool:
+    """True se a classe da viagem pode disparar alerta no WhatsApp."""
+    alvo = getattr(args, "whatsapp_classe", "premium") or "premium"
+    return v.classe.lower() == alvo.lower()
+
+
 def enviar_whatsapp_callmebot(numero: str, mensagem: str,
                               apikey: str, dry_run: bool = False) -> str:
     """Envia mensagem WhatsApp via CallMeBot (https://www.callmebot.com).
@@ -1656,31 +1662,40 @@ def monitorar(v: Viagem, args) -> None:
             )
 
         if envia:
-            url_html = None
-            if not args.sem_html_link:
-                links_dl = gerar_deeplinks(v)
-                html_str = render_html(v, links_dl, dados)
-                print(f"[{marca}] subindo relatório HTML...",
-                      file=sys.stderr)
-                url_html = upload_html_publico(html_str)
-                if url_html:
-                    print(f"[{marca}] relatório: {url_html}",
+            if not deve_enviar_whatsapp(v, args):
+                alvo_label = CLASSES[args.whatsapp_classe][1]
+                print(
+                    f"[{marca}] na faixa-alvo, mas WhatsApp só para "
+                    f"{alvo_label} — sem envio.",
+                    file=sys.stderr,
+                )
+            else:
+                url_html = None
+                if not args.sem_html_link:
+                    links_dl = gerar_deeplinks(v)
+                    html_str = render_html(v, links_dl, dados)
+                    print(f"[{marca}] subindo relatório HTML...",
                           file=sys.stderr)
-            msg = montar_mensagem_alerta(
-                v, total, nivel, emoji, url_html, moeda=moeda,
-            )
-            r = enviar_whatsapp_callmebot(
-                args.whatsapp or "", msg, apikey or "", dry_run=args.dry_run,
-            )
-            print(f"[{marca}] WhatsApp → {r}", file=sys.stderr)
-            cache[chave] = {
-                "ultimo_preco": total,
-                "moeda": moeda,
-                "timestamp": agora.isoformat(),
-                "nivel": nivel,
-                "url": url_html,
-            }
-            _salvar_cache_alerta(cache)
+                    url_html = upload_html_publico(html_str)
+                    if url_html:
+                        print(f"[{marca}] relatório: {url_html}",
+                              file=sys.stderr)
+                msg = montar_mensagem_alerta(
+                    v, total, nivel, emoji, url_html, moeda=moeda,
+                )
+                r = enviar_whatsapp_callmebot(
+                    args.whatsapp or "", msg, apikey or "",
+                    dry_run=args.dry_run,
+                )
+                print(f"[{marca}] WhatsApp → {r}", file=sys.stderr)
+                cache[chave] = {
+                    "ultimo_preco": total,
+                    "moeda": moeda,
+                    "timestamp": agora.isoformat(),
+                    "nivel": nivel,
+                    "url": url_html,
+                }
+                _salvar_cache_alerta(cache)
 
         time.sleep(intervalo_s)
 
@@ -2825,6 +2840,11 @@ def main() -> None:
                    help="Número WhatsApp (com DDD, ex: 11986185400)")
     g.add_argument("--whatsapp-apikey", metavar="KEY",
                    help="API key do CallMeBot (ou env CALLMEBOT_APIKEY)")
+    g.add_argument(
+        "--whatsapp-classe", choices=list(CLASSES.keys()), default="premium",
+        help="Só envia alerta no WhatsApp quando a viagem for desta classe "
+             "(padrão: premium). Outras classes ainda podem ser checadas.",
+    )
     g.add_argument("--preco-min", type=float, default=0,
                    metavar="VALOR",
                    help="Limite inferior da faixa-alvo (R$)")
@@ -2984,6 +3004,15 @@ def main() -> None:
             print(
                 f"[{marca}] alerta semelhante recente "
                 f"(cooldown {cooldown_h}h). Pulando.",
+                file=sys.stderr,
+            )
+            return
+
+        if not deve_enviar_whatsapp(v, args):
+            alvo_label = CLASSES[args.whatsapp_classe][1]
+            print(
+                f"[{marca}] na faixa-alvo, mas WhatsApp só para "
+                f"{alvo_label} — sem envio.",
                 file=sys.stderr,
             )
             return
