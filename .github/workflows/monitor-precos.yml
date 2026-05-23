@@ -1,18 +1,17 @@
 # Monitor de preços — roda na nuvem (GitHub Actions), grátis.
 # A cada 2h, checa 9 combinações de aeroporto em SP (GRU/CGH/VCP × GRU/CGH/VCP)
-# em TRÊS classes (Econômica, Premium Economy e Executiva), totalizando
-# 27 buscas por ciclo, pra rota SP→IBZ (16/07/2026) +
-# CDG/BRU/AMS→SP (01/08/2026).
+# em Premium Economy, totalizando 9 buscas por ciclo, pra rota SP→IBZ
+# (16/07/2026) + CDG/BRU/AMS→SP (01/08/2026).
 # Dispara WhatsApp quando o total estimado ficar até US$ 2.000.
+# (Alertas no WhatsApp só são enviados para Premium Economy.)
 
 name: Monitor de Preços
 
 on:
   schedule:
-    # 24h por dia, a cada 2h (~360 execuções/mês). 27 buscas por ciclo
-    # (9 rotas × 3 classes). Cada ciclo ~7 min, ~2.520 min/mês — pode
-    # ultrapassar o plano grátis (2.000 min/mês em repo privado). Se for
-    # apertado, aumente o intervalo (ex.: */3) ou reduza classes/rotas.
+    # 24h por dia, a cada 2h (~360 execuções/mês). 9 buscas por ciclo
+    # (9 rotas × 1 classe — Premium Economy). Cada ciclo ~2-3 min,
+    # cabendo bem dentro do plano grátis (2.000 min/mês em repo privado).
     - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
@@ -81,45 +80,44 @@ jobs:
           # Aeroportos SP equivalentes: usuário tem flexibilidade pra
           # sair/voltar por GRU (Guarulhos), CGH (Congonhas) ou VCP
           # (Viracopos/Campinas). Itera todas as combinações ida × volta
-          # em duas classes (Premium Economy e Executiva).
+          # apenas em Premium Economy — única classe com alerta no
+          # WhatsApp habilitado.
           # Cooldown é por rota + classe (chave = rota_resumo|classe_label).
           IDAS=("GRU" "CGH" "VCP")
           VOLTAS=("GRU" "CGH" "VCP")
-          CLASSES=("economica" "premium" "executiva")
+          CLASSE="premium"
 
           set +e
           FALHAS=0
           EXECUCOES=0
-          for CLASSE in "${CLASSES[@]}"; do
-            for IDA in "${IDAS[@]}"; do
-              for VOLTA in "${VOLTAS[@]}"; do
-                EXECUCOES=$((EXECUCOES + 1))
-                echo ""
-                echo "==============================================="
-                echo "=== Cenário: ${IDA}→IBZ + CDG/BRU/AMS→${VOLTA} (${CLASSE})"
-                echo "==============================================="
-                python buscar_passagens.py \
-                  --trecho ${IDA}-IBZ:16/07/2026 \
-                  --trecho CDG,BRU,AMS-${VOLTA}:01/08/2026 \
-                  --classe ${CLASSE} \
-                  --max-escalas 2 \
-                  --checar-uma-vez \
-                  --ignorar-horario \
-                  --whatsapp 11986185400 \
-                  --preco-min-usd 0 \
-                  --preco-max-usd 2000 \
-                  --cooldown 6 \
-                  $EXTRA
-                RC=$?
-                if [ $RC -ne 0 ]; then
-                  echo "[aviso] cenário ${IDA}→IBZ + CDG/BRU/AMS→${VOLTA} (${CLASSE}) saiu com código $RC — seguindo."
-                  FALHAS=$((FALHAS + 1))
-                fi
-              done
+          for IDA in "${IDAS[@]}"; do
+            for VOLTA in "${VOLTAS[@]}"; do
+              EXECUCOES=$((EXECUCOES + 1))
+              echo ""
+              echo "==============================================="
+              echo "=== Cenário: ${IDA}→IBZ + CDG/BRU/AMS→${VOLTA} (${CLASSE})"
+              echo "==============================================="
+              python buscar_passagens.py \
+                --trecho ${IDA}-IBZ:16/07/2026 \
+                --trecho CDG,BRU,AMS-${VOLTA}:01/08/2026 \
+                --classe ${CLASSE} \
+                --max-escalas 2 \
+                --checar-uma-vez \
+                --ignorar-horario \
+                --whatsapp 11986185400 \
+                --preco-min-usd 0 \
+                --preco-max-usd 2000 \
+                --cooldown 6 \
+                $EXTRA
+              RC=$?
+              if [ $RC -ne 0 ]; then
+                echo "[aviso] cenário ${IDA}→IBZ + CDG/BRU/AMS→${VOLTA} (${CLASSE}) saiu com código $RC — seguindo."
+                FALHAS=$((FALHAS + 1))
+              fi
             done
           done
           echo ""
-          echo "=== Fim do ciclo: $EXECUCOES execuções (9 rotas × 3 classes), $FALHAS falhas ==="
+          echo "=== Fim do ciclo: $EXECUCOES execuções (9 rotas × Premium Economy), $FALHAS falhas ==="
           # Sai 0 se pelo menos uma combinação rodou — falhas individuais
           # são logadas mas não derrubam o job (rotas com cache vazio etc).
           exit 0
